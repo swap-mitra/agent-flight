@@ -180,3 +180,35 @@ def test_non_json_inputs_and_output_are_converted_not_raised(sink: ListSink) -> 
         run.output = Opaque()
     assert run.inputs == {"ticket": {"id": 1, "tags": ["a"]}, "raw": "_w=="}
     assert run.output == "<Opaque>"
+
+
+def test_step_opened_inside_another_links_to_it(sink: ListSink) -> None:
+    with fr.run("triage"):
+        active = current()
+        outer = active.open_step("tool")
+        tool_step("inner")
+        with fr.thread_executor() as pool:
+            pool.submit(tool_step, "in_thread").result()
+        active.close_step(
+            outer, "ok", tool=ToolCall(name="outer", effect="read", args={})
+        )
+        tool_step("after")
+
+    parents = {s.tool.name: s.parent_seq for s in sink.steps if s.tool}
+    assert parents == {"inner": 0, "in_thread": 0, "outer": None, "after": None}
+
+
+def test_child_run_inside_a_step_does_not_link_to_parent_runs_step(
+    sink: ListSink,
+) -> None:
+    with fr.run("parent"):
+        active = current()
+        outer = active.open_step("tool")
+        with fr.run("child"):
+            tool_step("in_child")
+        active.close_step(
+            outer, "ok", tool=ToolCall(name="outer", effect="read", args={})
+        )
+
+    child_step = next(s for s in sink.steps if s.tool and s.tool.name == "in_child")
+    assert child_step.parent_seq is None

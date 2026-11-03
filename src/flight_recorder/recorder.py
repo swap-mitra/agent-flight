@@ -5,10 +5,12 @@ reaches the agent. Interceptors open a step before the real call and close it
 after, then return or re-raise exactly what the call produced.
 """
 
+import contextlib
 import logging
 import threading
 import time
 from collections.abc import Callable
+from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
 
@@ -40,11 +42,20 @@ def jsonable(value: Any) -> JsonValue:
         return repr(value)
 
 
+# The innermost open step in this context, as (run_id, seq). Keyed by run so a
+# child run opened inside a tool does not adopt its parent run's step.
+_open_step: ContextVar[tuple[str, int] | None] = ContextVar(
+    "flight_recorder_step", default=None
+)
+
+
 @dataclass
 class PendingStep:
     seq: int
     kind: Literal["model", "tool"]
     started: float
+    parent_seq: int | None
+    token: Token[tuple[str, int] | None]
 
 
 @dataclass
@@ -68,7 +79,10 @@ class ActiveRun:
         with self._lock:
             seq = self._next_seq
             self._next_seq += 1
-        return PendingStep(seq=seq, kind=kind, started=time.perf_counter())
+        outer = _open_step.get()
+        parent_seq = outer[1] if outer and outer[0] == self.run.run_id else None
+        token = _open_step.set((self.run.run_id, seq))
+        return PendingStep(seq, kind, time.perf_counter(), parent_seq, token)
 
     def close_step(
         self,
@@ -78,10 +92,15 @@ class ActiveRun:
         model: ModelCall | None = None,
         tool: ToolCall | None = None,
     ) -> None:
+        # ValueError: closed in another context (e.g. a stream consumed elsewhere),
+        # whose open step was never this one, so there is nothing to restore.
+        with contextlib.suppress(ValueError):
+            _open_step.reset(pending.token)
         try:
             step = Step(
                 seq=pending.seq,
                 kind=pending.kind,
+                parent_seq=pending.parent_seq,
                 latency_ms=(time.perf_counter() - pending.started) * 1000,
                 status=status,
                 model=model,

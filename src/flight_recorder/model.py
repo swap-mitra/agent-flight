@@ -54,6 +54,8 @@ class Step(BaseModel):
     seq: int
     kind: Literal["model", "tool"]
     parallel_group: str | None = None
+    # The step open when this one started (e.g. a model call inside a tool).
+    parent_seq: int | None = None
     tags: list[str] = []
     source: Literal["live", "replayed", "stubbed"] = "live"
     latency_ms: float
