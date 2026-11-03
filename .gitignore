@@ -5,3 +5,5 @@ __pycache__/
 dist/
 # Design specs are local only, like Heptapod's specs/.
 docs/
+# Agent instructions are local only, like docs/.
+CLAUDE.md
