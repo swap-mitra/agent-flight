@@ -30,16 +30,19 @@ class _Chat(Request):
 
     def read_response(self, response: Any) -> Read:
         finish = response.choices[0].finish_reason if response.choices else None
-        return response.model, finish, _usage(response.usage)
+        return Read(
+            response.model, finish, _usage(response.usage), unpriced=_tier(response)
+        )
 
     def read_chunks(self, chunks: list[Any]) -> Read:
-        model, finish, usage = self.model, None, None
+        model, finish, usage, tier = self.model, None, None, None
         for chunk in chunks:
             model = chunk.model or model
             if chunk.choices and chunk.choices[0].finish_reason:
                 finish = chunk.choices[0].finish_reason
             usage = _usage(chunk.usage) or usage
-        return model, finish, usage
+            tier = _tier(chunk) or tier
+        return Read(model, finish, usage, unpriced=tier)
 
 
 class _Responses(Request):
@@ -51,25 +54,37 @@ class _Responses(Request):
         finish = details.reason if details is not None else response.status
         usage = response.usage
         if usage is not None:
+            cached = usage.input_tokens_details
             usage = Usage(
-                input_tokens=usage.input_tokens, output_tokens=usage.output_tokens
+                input_tokens=usage.input_tokens,
+                output_tokens=usage.output_tokens,
+                cache_read_tokens=(cached and cached.cached_tokens) or 0,
             )
-        return response.model, finish, usage
+        return Read(response.model, finish, usage, unpriced=_tier(response))
 
     def read_chunks(self, chunks: list[Any]) -> Read:
         # The final event carries the whole response.
         for event in reversed(chunks):
             if isinstance(getattr(event, "response", None), BaseModel):
                 return self.read_response(event.response)
-        return self.model, None, None
+        return Read(self.model, None, None)
 
 
 def _usage(usage: Any) -> Usage | None:
     if usage is None:
         return None
+    cached = usage.prompt_tokens_details
     return Usage(
-        input_tokens=usage.prompt_tokens, output_tokens=usage.completion_tokens
+        input_tokens=usage.prompt_tokens,
+        output_tokens=usage.completion_tokens,
+        cache_read_tokens=(cached and cached.cached_tokens) or 0,
     )
+
+
+def _tier(response: Any) -> str | None:
+    """The service tier, if the pricing table (standard tier) doesn't price it."""
+    tier = getattr(response, "service_tier", None)
+    return None if tier in (None, "auto", "default") else f"service_tier {tier!r}"
 
 
 def wrap(client: OpenAI | AsyncOpenAI) -> None:

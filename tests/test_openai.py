@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from pathlib import Path
 from typing import Any
 
 import httpx2
@@ -13,9 +14,16 @@ from openai.types.chat import ChatCompletion
 import flight_recorder as fr
 from flight_recorder import recorder
 from flight_recorder.model import Run, Step
+from flight_recorder.policy import pricing
 
 MODEL = "gpt-x-2026-01-01"
-USAGE_CHAT = {"prompt_tokens": 12, "completion_tokens": 3, "total_tokens": 15}
+# 12 prompt tokens, 4 of them read from the prompt cache.
+USAGE_CHAT = {
+    "prompt_tokens": 12,
+    "completion_tokens": 3,
+    "total_tokens": 15,
+    "prompt_tokens_details": {"cached_tokens": 4},
+}
 COMPLETION: dict[str, Any] = {
     "id": "c1",
     "object": "chat.completion",
@@ -44,7 +52,7 @@ RESPONSE: dict[str, Any] = {
         "input_tokens": 12,
         "output_tokens": 3,
         "total_tokens": 15,
-        "input_tokens_details": {"cached_tokens": 0},
+        "input_tokens_details": {"cached_tokens": 4},
         "output_tokens_details": {"reasoning_tokens": 0},
     },
 }
@@ -73,10 +81,13 @@ def sse(events: list[dict[str, Any]], named: bool = False) -> bytes:
 class Server:
     """Answers like the OpenAI API and keeps every request body."""
 
-    def __init__(self, fail: bool = False, error_mid_stream: bool = False) -> None:
+    def __init__(
+        self, fail: bool = False, error_mid_stream: bool = False, tier: str = "default"
+    ) -> None:
         self.bodies: list[dict[str, Any]] = []
         self.fail = fail
         self.error_mid_stream = error_mid_stream
+        self.tier = tier
 
     def __call__(self, request: httpx2.Request) -> httpx2.Response:
         body = json.loads(request.content)
@@ -89,7 +100,7 @@ class Server:
                 if request.url.path.endswith("/chat/completions")
                 else RESPONSE
             )
-            return httpx2.Response(200, json=payload)
+            return httpx2.Response(200, json={**payload, "service_tier": self.tier})
         headers = {"content-type": "text/event-stream"}
         if request.url.path.endswith("/responses"):
             events = [
@@ -113,6 +124,7 @@ class Server:
         events.append(chunk("ped", "stop"))
         if body.get("stream_options", {}).get("include_usage"):
             events.append({**chunk(None), "choices": [], "usage": USAGE_CHAT})
+        events = [{**e, "service_tier": self.tier} for e in events]
         return httpx2.Response(200, headers=headers, content=sse(events))
 
 
@@ -194,6 +206,7 @@ def test_api_error_is_recorded_and_reraised_unchanged(sink: Sink) -> None:
     assert step.status == "error"
     assert call.error.type == "openai.InternalServerError"
     assert (call.model_used, call.response, call.usage) == ("gpt-x", None, None)
+    assert call.cost_usd == 0.0  # rejected requests are not billed
 
 
 def test_chat_stream_yields_the_callers_chunks_and_records_usage(sink: Sink) -> None:
@@ -246,6 +259,7 @@ def test_stream_closed_early_or_left_open_is_abandoned_before_the_footer(
         )  # never read
 
     assert [model_of(s).finish_reason for s in sink.steps] == ["abandoned", "abandoned"]
+    assert [model_of(s).cost_usd for s in sink.steps] == [None, None]
     assert [s.status for s in sink.steps] == ["ok", "ok"]
     assert sink.events == ["start", "step", "step", "finish"]
 
@@ -322,3 +336,40 @@ def test_wrapping_twice_records_once(sink: Sink) -> None:
 def test_unsupported_client_is_a_type_error() -> None:
     with pytest.raises(TypeError, match="does not support object"):
         fr.wrap(object())
+
+
+@pytest.fixture
+def priced(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    prices = tmp_path / "prices.toml"
+    prices.write_text(
+        '[openai]\n"gpt-x" = { input = 1.0, cache_read = 0.5, output = 2.0 }\n'
+    )
+    monkeypatch.setattr(pricing, "table", pricing.load(prices))
+
+
+def test_cost_prices_cached_tokens_on_every_api(sink: Sink, priced: None) -> None:
+    llm = client(Server())
+    with fr.run("triage") as run:
+        llm.chat.completions.create(model="gpt-x", messages=[])
+        list(llm.chat.completions.create(model="gpt-x", messages=[], stream=True))
+        llm.responses.create(model="gpt-x", input="hi")
+        list(llm.responses.create(model="gpt-x", input="hi", stream=True))
+
+    # The dated model used falls back to gpt-x: 8 uncached x $1, 4 cached x
+    # $0.50, 3 out x $2 per million.
+    for step in sink.steps:
+        assert model_of(step).usage.cache_read_tokens == 4
+        assert model_of(step).cost_usd == pytest.approx(16 / 1_000_000)
+    assert run.totals.cost_usd == pytest.approx(4 * 16 / 1_000_000)
+
+
+def test_unpriced_service_tier_records_null_cost(
+    sink: Sink, priced: None, caplog: pytest.LogCaptureFixture
+) -> None:
+    llm = client(Server(tier="flex"))
+    with fr.run("triage"):
+        llm.chat.completions.create(model="gpt-x", messages=[])
+        list(llm.chat.completions.create(model="gpt-x", messages=[], stream=True))
+
+    assert [model_of(s).cost_usd for s in sink.steps] == [None, None]
+    assert caplog.text.count("used service_tier 'flex'") == 1

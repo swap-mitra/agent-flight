@@ -24,36 +24,70 @@ class _Messages(Request):
     provider = "anthropic"
 
     def read_response(self, response: Any) -> Read:
-        return response.model, response.stop_reason, _usage(response.usage)
+        usage = response.usage
+        return Read(
+            response.model,
+            response.stop_reason,
+            _usage(_counts(usage)),
+            *_billing(usage),
+        )
 
     def read_chunks(self, chunks: list[Any]) -> Read:
-        model, finish = self.model, None
-        tokens_in: int | None = None
-        tokens_out: int | None = None
+        model, finish, start = self.model, None, None
+        counts: dict[str, int | None] = {}
         for event in chunks:
             if event.type == "message_start":
-                model = event.message.model
-                start = _usage(event.message.usage)
-                tokens_in, tokens_out = start.input_tokens, start.output_tokens
+                model, start = event.message.model, event.message.usage
+                counts = _counts(start)
             elif event.type == "message_delta":
                 finish = event.delta.stop_reason or finish
-                tokens_out = event.usage.output_tokens  # cumulative
-                if event.usage.input_tokens is not None:
-                    tokens_in = _usage(event.usage).input_tokens
-        if tokens_in is None or tokens_out is None:
-            return model, finish, None
-        return model, finish, Usage(input_tokens=tokens_in, output_tokens=tokens_out)
+                # Cumulative counts; a field the delta omits keeps its start value.
+                latest = _counts(event.usage)
+                counts.update({k: v for k, v in latest.items() if v is not None})
+        if start is None:
+            return Read(model, finish, None)
+        return Read(model, finish, _usage(counts), *_billing(start))
 
 
-def _usage(usage: Any) -> Usage:
-    # Anthropic counts cached prompt tokens separately; input_tokens is the
-    # whole prompt, comparable with OpenAI. The breakdown stays in the response.
+_COUNTS = (
+    "input_tokens",
+    "cache_creation_input_tokens",
+    "cache_read_input_tokens",
+    "output_tokens",
+)
+
+
+def _counts(usage: Any) -> dict[str, int | None]:
+    return {name: getattr(usage, name, None) for name in _COUNTS}
+
+
+def _usage(counts: dict[str, int | None]) -> Usage:
+    # Anthropic counts cached prompt tokens apart from input_tokens; Usage's
+    # input_tokens is the whole prompt, comparable with OpenAI.
+    read = counts["cache_read_input_tokens"] or 0
+    write = counts["cache_creation_input_tokens"] or 0
     return Usage(
-        input_tokens=(usage.input_tokens or 0)
-        + (usage.cache_creation_input_tokens or 0)
-        + (usage.cache_read_input_tokens or 0),
-        output_tokens=usage.output_tokens,
+        input_tokens=(counts["input_tokens"] or 0) + read + write,
+        output_tokens=counts["output_tokens"] or 0,
+        cache_read_tokens=read,
+        cache_write_tokens=write,
     )
+
+
+def _billing(usage: Any) -> tuple[int, str | None]:
+    """One-hour cache writes, and any modifier the pricing table doesn't price."""
+    cache = getattr(usage, "cache_creation", None)
+    one_hour = cache.ephemeral_1h_input_tokens if cache is not None else 0
+    modifiers = [
+        f"{name} {value!r}"
+        for name, standard in (
+            ("service_tier", "standard"),
+            ("speed", "standard"),
+            ("inference_geo", "global"),
+        )
+        if (value := getattr(usage, name, None)) not in (None, standard)
+    ]
+    return one_hour, ", ".join(modifiers) or None
 
 
 def wrap(client: Anthropic | AsyncAnthropic) -> None:

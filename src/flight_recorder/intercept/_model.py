@@ -6,16 +6,25 @@ responses read, then routes each SDK call through ``call`` or ``acall``.
 
 import threading
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
-from typing import Any
+from typing import Any, NamedTuple
 
 from flight_recorder.context import active_run
 from flight_recorder.model import ModelCall, Usage
+from flight_recorder.policy import pricing
 from flight_recorder.recorder import ActiveRun, PendingStep, error_info, jsonable
 
 # SDK transport options, not model parameters.
 TRANSPORT = ("extra_headers", "extra_query", "timeout")
 
-Read = tuple[str, str | None, Usage | None]  # model used, finish reason, usage
+
+class Read(NamedTuple):
+    """What a provider reads from a response or a stream's chunks."""
+
+    model: str  # the model used
+    finish_reason: str | None
+    usage: Usage | None
+    cache_write_1h: int = 0  # of usage.cache_write_tokens, priced apart
+    unpriced: str | None = None  # a pricing modifier the table can't express
 
 
 class Request:
@@ -51,22 +60,36 @@ class Request:
         chunks: list[Any] | None = None,
         abandoned: bool = False,
     ) -> ModelCall:
-        model_used, finish_reason, usage = self.model, None, None
+        read, recorded = Read(self.model, None, None), None
         if chunks is not None:
-            model_used, finish_reason, usage = self.read_chunks(chunks)
-            response = [c.model_dump(mode="json") for c in chunks]
+            read = self.read_chunks(chunks)
+            recorded = [c.model_dump(mode="json") for c in chunks]
         elif response is not None:
-            model_used, finish_reason, usage = self.read_response(response)
-            response = response.model_dump(mode="json")
+            read = self.read_response(response)
+            recorded = response.model_dump(mode="json")
+        model_used = read.model or self.model
+        if error is not None and recorded is None:
+            cost = 0.0  # rejected before any response; providers don't bill these
+        elif error is not None or abandoned or read.usage is None:
+            cost = None  # tokens were spent, but the full count is unknown
+        else:
+            cost = pricing.cost(
+                self.provider,
+                model_used,
+                read.usage,
+                cache_write_1h=read.cache_write_1h,
+                unpriced=read.unpriced,
+            )
         return ModelCall(
             provider=self.provider,
             model_requested=self.model,
-            model_used=model_used or self.model,
+            model_used=model_used,
             params=self.params,
             messages=self.messages,
-            response=response,
-            finish_reason="abandoned" if abandoned else finish_reason,
-            usage=usage,
+            response=recorded,
+            finish_reason="abandoned" if abandoned else read.finish_reason,
+            usage=read.usage,
+            cost_usd=cost,
             error=error_info(error) if error is not None else None,
         )
 

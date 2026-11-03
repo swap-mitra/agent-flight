@@ -21,8 +21,12 @@ class ErrorInfo(BaseModel):
 
 
 class Usage(BaseModel):
+    # The whole prompt, cached or not, on every provider.
     input_tokens: int
     output_tokens: int
+    # Parts of input_tokens read from and written to the provider's prompt cache.
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
 
 
 class ModelCall(BaseModel):

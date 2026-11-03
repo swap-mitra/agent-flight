@@ -7,3 +7,7 @@ class FlightRecorderError(Exception):
 
 class CassetteError(FlightRecorderError):
     """A cassette is corrupt or has an unknown schema version."""
+
+
+class PricingError(FlightRecorderError):
+    """A pricing file is invalid; raised by fr.configure(), never mid-run."""

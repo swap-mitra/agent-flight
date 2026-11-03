@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from pathlib import Path
 from typing import Any
 
 import anthropic
@@ -14,14 +15,18 @@ import flight_recorder as fr
 from flight_recorder import recorder
 from flight_recorder.intercept import anthropic as fr_anthropic
 from flight_recorder.model import Run, Step
+from flight_recorder.policy import pricing
 
 MODEL = "claude-x-2026-01-01"
-# 10 uncached + 2 written to cache + 100 read from cache = a 112-token prompt.
+# 10 uncached + 2 written to cache (one 5-minute, one 1-hour) + 100 read from
+# cache = a 112-token prompt.
 USAGE: dict[str, Any] = {
     "input_tokens": 10,
     "cache_creation_input_tokens": 2,
+    "cache_creation": {"ephemeral_5m_input_tokens": 1, "ephemeral_1h_input_tokens": 1},
     "cache_read_input_tokens": 100,
     "output_tokens": 3,
+    "service_tier": "standard",
 }
 MESSAGE: dict[str, Any] = {
     "id": "m1",
@@ -35,12 +40,14 @@ MESSAGE: dict[str, Any] = {
 }
 
 
-def events(error_mid_stream: bool = False) -> list[dict[str, Any]]:
+def events(
+    error_mid_stream: bool = False, usage: dict[str, Any] = USAGE
+) -> list[dict[str, Any]]:
     start: dict[str, Any] = {
         **MESSAGE,
         "content": [],
         "stop_reason": None,
-        "usage": {**USAGE, "output_tokens": 1},
+        "usage": {**usage, "output_tokens": 1},
     }
     out: list[dict[str, Any]] = [
         {"type": "message_start", "message": start},
@@ -82,10 +89,16 @@ def events(error_mid_stream: bool = False) -> list[dict[str, Any]]:
 class Server:
     """Answers like the Anthropic API and counts requests."""
 
-    def __init__(self, fail: bool = False, error_mid_stream: bool = False) -> None:
+    def __init__(
+        self,
+        fail: bool = False,
+        error_mid_stream: bool = False,
+        usage: dict[str, Any] = USAGE,
+    ) -> None:
         self.requests = 0
         self.fail = fail
         self.error_mid_stream = error_mid_stream
+        self.usage = usage
 
     def __call__(self, request: httpx2.Request) -> httpx2.Response:
         self.requests += 1
@@ -98,10 +111,10 @@ class Server:
                 },
             )
         if not json.loads(request.content).get("stream"):
-            return httpx2.Response(200, json=MESSAGE)
+            return httpx2.Response(200, json={**MESSAGE, "usage": self.usage})
         body = "".join(
             f"event: {e['type']}\ndata: {json.dumps(e)}\n\n"
-            for e in events(self.error_mid_stream)
+            for e in events(self.error_mid_stream, self.usage)
         )
         return httpx2.Response(
             200, headers={"content-type": "text/event-stream"}, content=body.encode()
@@ -189,6 +202,7 @@ def test_api_error_is_recorded_and_reraised_unchanged(sink: Sink) -> None:
     (step,) = sink.steps
     assert step.status == "error"
     assert model_of(step).error.type == "anthropic.InternalServerError"
+    assert model_of(step).cost_usd == 0.0  # rejected requests are not billed
 
 
 def test_create_stream_passes_events_through_and_records_usage(sink: Sink) -> None:
@@ -244,6 +258,7 @@ def test_stream_left_early_is_abandoned_before_the_footer(sink: Sink) -> None:
         next(iter(stream))
 
     assert model_of(sink.steps[0]).finish_reason == "abandoned"
+    assert model_of(sink.steps[0]).cost_usd is None
     assert sink.events == ["start", "step", "finish"]
 
 
@@ -313,3 +328,59 @@ def test_renamed_stream_hook_fails_open(
 
     assert sink.steps == []
     assert "stream manager has no _renamed" in caplog.text
+
+
+@pytest.fixture
+def priced(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    prices = tmp_path / "prices.toml"
+    prices.write_text(
+        '[anthropic]\n"claude-x" = { input = 1.0, output = 2.0, cache_read = 0.1,'
+        " cache_write = 1.25, cache_write_1h = 2.0 }\n"
+    )
+    monkeypatch.setattr(pricing, "table", pricing.load(prices))
+
+
+def test_cost_prices_each_cache_rate_however_the_call_is_made(
+    sink: Sink, priced: None
+) -> None:
+    llm = client(Server())
+    with fr.run("triage"):
+        llm.messages.create(**ASK)
+        list(llm.messages.create(**ASK, stream=True))
+        with llm.messages.stream(**ASK) as stream:
+            stream.until_done()
+
+    # Per million: 10 uncached x $1, 100 read x $0.10, one 5m write x $1.25,
+    # one 1h write x $2, 3 out x $2.
+    assert len(sink.steps) == 3
+    for step in sink.steps:
+        usage = model_of(step).usage
+        assert (usage.cache_read_tokens, usage.cache_write_tokens) == (100, 2)
+        assert model_of(step).cost_usd == pytest.approx(29.25 / 1_000_000)
+
+
+def test_us_inference_geo_records_null_cost(
+    sink: Sink, priced: None, caplog: pytest.LogCaptureFixture
+) -> None:
+    llm = client(Server(usage={**USAGE, "inference_geo": "us"}))
+    with fr.run("triage"):
+        llm.messages.create(**ASK)
+        list(llm.messages.create(**ASK, stream=True))
+
+    assert [model_of(s).cost_usd for s in sink.steps] == [None, None]
+    assert caplog.text.count("used inference_geo 'us'") == 1
+
+
+def test_run_on_an_unpriced_model_has_null_cost_and_one_warning(
+    sink: Sink, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # FR-B8 acceptance. claude-x is not in the shipped table.
+    monkeypatch.setattr(pricing, "_warned", set[str]())
+    llm = client(Server())
+    with fr.run("triage") as run:
+        llm.messages.create(**ASK)
+        llm.messages.create(**ASK)
+
+    assert [model_of(s).cost_usd for s in sink.steps] == [None, None]
+    assert run.totals.cost_usd is None
+    assert caplog.text.count("no price for anthropic model 'claude-x-2026-01-01'") == 1
