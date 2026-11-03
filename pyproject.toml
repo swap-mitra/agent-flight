@@ -47,3 +47,5 @@ pythonVersion = "3.11"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Interception must be invisible: a warning that reaches the agent is a bug.
+filterwarnings = ["error"]
