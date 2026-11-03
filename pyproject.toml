@@ -16,6 +16,9 @@ fr = "flight_recorder.cli:main"
 openai = [
     "openai>=1",
 ]
+anthropic = [
+    "anthropic>=0.40",
+]
 
 [dependency-groups]
 dev = [
@@ -23,6 +26,7 @@ dev = [
     "ruff",
     "pyright",
     "openai>=1",
+    "anthropic>=0.40",
 ]
 
 [build-system]
