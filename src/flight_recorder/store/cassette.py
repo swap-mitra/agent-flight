@@ -9,6 +9,7 @@ import json
 import logging
 import queue
 import threading
+from contextlib import closing
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -17,6 +18,7 @@ from pydantic import JsonValue, ValidationError
 
 from flight_recorder.errors import CassetteError
 from flight_recorder.model import SCHEMA_VERSION, Run, Step
+from flight_recorder.store import index
 
 logger = logging.getLogger("flight_recorder")
 
@@ -118,11 +120,17 @@ class CassetteStore:
 
     def _write(self, item: _Item) -> None:
         assert item is not None
-        _, file, line_type, fields = item
-        fields = {k: self._store_blobs(v) for k, v in fields.items()}
+        run_id, file, line_type, fields = item
+        line = _line(line_type, {k: self._store_blobs(v) for k, v in fields.items()})
         file.parent.mkdir(parents=True, exist_ok=True)
         with file.open("a", encoding="utf-8", newline="\n") as f:
-            f.write(_line(line_type, fields))
+            f.write(line)
+        # The cassette line goes first: it is the source of truth.
+        # ponytail: one connection per write; keep one open in the writer
+        # thread if the overhead benchmark (row 1.15) flags it.
+        path = file.relative_to(self.root).as_posix()
+        with closing(index.connect(self.root / "index.sqlite")) as db, db:
+            index.write(db, run_id, path, line_type, fields)
 
     def _store_blobs(self, value: Any) -> Any:
         if isinstance(value, str):
