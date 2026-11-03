@@ -1,5 +1,7 @@
 import logging
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -35,8 +37,18 @@ class JsonSink:
 def sink(monkeypatch: pytest.MonkeyPatch) -> Iterator[JsonSink]:
     sink = JsonSink()
     monkeypatch.setattr(recorder, "sinks", [sink])
-    monkeypatch.setattr(redact, "rules", list(redact.DEFAULT_RULES))
     yield sink
+
+
+@pytest.fixture
+def configure(sink: JsonSink, tmp_path: Path) -> Callable[..., None]:
+    """fr.configure() that keeps the test sink observing records."""
+
+    def configure(**kwargs: Any) -> None:
+        fr.configure(dir=tmp_path, **kwargs)
+        recorder.sinks = [sink]
+
+    return configure
 
 
 @fr.tool(effect="write")
@@ -124,14 +136,16 @@ def test_invalid_paths_are_rejected_when_the_rule_is_made(expr: str) -> None:
         redact.path(expr)
 
 
-def test_configured_pattern_path_and_callable_rules_apply(sink: JsonSink) -> None:
+def test_configured_pattern_path_and_callable_rules_apply(
+    sink: JsonSink, configure: Callable[..., None]
+) -> None:
     def drop_result(record: Record) -> Record:
         tool = record.get("tool")
         if isinstance(tool, dict):
             tool["result"] = None
         return record
 
-    fr.configure(
+    configure(
         redact=[
             redact.pattern(r"\b\d{3}-\d{2}-\d{4}\b"),  # SSN
             redact.path("$.tool.args.url"),
@@ -148,19 +162,21 @@ def test_configured_pattern_path_and_callable_rules_apply(sink: JsonSink) -> Non
     assert tool.result is None
 
 
-def test_configure_replaces_rules_and_keeps_defaults(sink: JsonSink) -> None:
-    fr.configure(redact=[redact.path("$.tool.args.url")])
-    fr.configure()
+def test_configure_replaces_rules_and_keeps_defaults(
+    configure: Callable[..., None],
+) -> None:
+    configure(redact=[redact.path("$.tool.args.url")])
+    configure()
     assert redact.rules == redact.DEFAULT_RULES
 
 
 def test_failing_rule_drops_the_record_and_the_agent_continues(
-    sink: JsonSink, caplog: pytest.LogCaptureFixture
+    sink: JsonSink, configure: Callable[..., None], caplog: pytest.LogCaptureFixture
 ) -> None:
     def broken(record: Record) -> Record:
         raise RuntimeError("rule bug")
 
-    fr.configure(redact=[broken])
+    configure(redact=[broken])
     with (
         caplog.at_level(logging.WARNING, logger="flight_recorder"),
         fr.run("triage") as run,
