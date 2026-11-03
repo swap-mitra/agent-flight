@@ -1,5 +1,10 @@
+import atexit
 import json
 import logging
+import subprocess
+import sys
+import threading
+import time
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -206,3 +211,77 @@ def test_step_from_a_store_validates_like_any_step(tmp_path: Path) -> None:
     record(CassetteStore(tmp_path, background=False))
     _, steps = load(only_file(tmp_path))
     assert all(isinstance(s, Step) for s in steps)
+
+
+class WriterKilled(BaseException):
+    """Escapes the writer's fail-open handler, as only a bug would."""
+
+
+@pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
+def test_flush_returns_at_once_when_the_writer_thread_died(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def die(self: CassetteStore, item: object) -> None:
+        raise WriterKilled
+
+    monkeypatch.setattr(CassetteStore, "_write", die)
+    store = CassetteStore(tmp_path)
+    recorder.sinks = [store]
+    with fr.run("triage"):
+        search_orders("c1")
+
+    started = time.monotonic()
+    assert store.flush() is False  # no timeout given, and still no hang
+    assert time.monotonic() - started < 5
+    atexit.unregister(store._flush_at_exit)  # type: ignore[reportPrivateUsage]
+
+
+def test_flush_gives_up_on_a_hung_write_after_its_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    release = threading.Event()
+    write = CassetteStore._write  # type: ignore[reportPrivateUsage]
+
+    def hung(self: CassetteStore, item: object) -> None:
+        release.wait()
+        write(self, item)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(CassetteStore, "_write", hung)
+    store = CassetteStore(tmp_path)
+    recorder.sinks = [store]
+    with fr.run("triage"):
+        search_orders("c1")
+
+    assert store.flush(timeout=0.2) is False
+    release.set()
+    assert store.flush(timeout=10) is True
+    store.close()
+
+
+# The agent process exits even though its last write never finishes.
+HUNG_AT_EXIT = """
+import threading
+import flight_recorder as fr
+from flight_recorder.store import cassette
+
+cassette.EXIT_FLUSH_TIMEOUT = 0.5
+cassette.CassetteStore._write = lambda self, item: threading.Event().wait()
+fr.configure(dir={root!r})
+with fr.run("triage"):
+    pass
+print("agent done")
+"""
+
+
+def test_a_hung_write_never_keeps_the_process_from_exiting(tmp_path: Path) -> None:
+    script = HUNG_AT_EXIT.format(root=str(tmp_path))
+    done = subprocess.run(
+        [sys.executable, "-c", script],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert done.returncode == 0
+    assert done.stdout.strip() == "agent done"
+    assert "records were not written before exit" in done.stderr

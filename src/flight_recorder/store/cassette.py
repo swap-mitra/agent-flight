@@ -9,6 +9,7 @@ import json
 import logging
 import queue
 import threading
+import time
 from contextlib import closing
 from datetime import UTC, datetime
 from pathlib import Path
@@ -23,6 +24,9 @@ from flight_recorder.store import index
 logger = logging.getLogger("flight_recorder")
 
 BLOB_THRESHOLD = 64 * 1024
+# How long interpreter exit waits for pending writes, so a dead writer thread
+# or a hung disk never keeps the agent's process from exiting.
+EXIT_FLUSH_TIMEOUT = 5.0
 # Last on each line, so a word diff of a re-recorded run shows them apart.
 _VOLATILE = ("run_id", "parent_run_id", "latency_ms")
 _FOOTER_FIELDS = ("status", "output", "totals")
@@ -71,16 +75,40 @@ class CassetteStore:
         footer = run.model_dump(mode="json", include=set(_FOOTER_FIELDS))
         self._put((run.run_id, file, "footer", footer))
 
-    def flush(self) -> None:
-        """Block until every queued record is written."""
-        self._queue.join()
+    def flush(self, timeout: float | None = None) -> bool:
+        """Wait until every queued record is written.
+
+        Returns False instead of waiting on when ``timeout`` seconds pass or
+        the writer thread has died with records still queued.
+        """
+        deadline = None if timeout is None else time.monotonic() + timeout
+        # ponytail: polls Queue's condition so a dead writer is noticed; a
+        # writer that died would otherwise leave join() waiting forever.
+        done = self._queue.all_tasks_done
+        with done:
+            while self._queue.unfinished_tasks:
+                if self._thread is None or not self._thread.is_alive():
+                    return False
+                left = 0.1 if deadline is None else deadline - time.monotonic()
+                if left <= 0:
+                    return False
+                done.wait(min(left, 0.1))
+        return True
 
     def close(self) -> None:
-        """Flush and stop the writer thread."""
+        """Flush and stop the writer thread, waiting at most EXIT_FLUSH_TIMEOUT."""
         if self._thread is not None:
             self._queue.put(None)
-            self._thread.join()
+            self._thread.join(EXIT_FLUSH_TIMEOUT)
             self._thread = None
+
+    def _flush_at_exit(self) -> None:
+        if not self.flush(EXIT_FLUSH_TIMEOUT):
+            logger.warning(
+                "%d records were not written before exit; a run left without"
+                " its footer loads as incomplete",
+                self._queue.unfinished_tasks,
+            )
 
     def _put(self, item: _Item) -> None:
         assert item is not None
@@ -103,7 +131,7 @@ class CassetteStore:
                     target=self._drain, name="flight_recorder-writer", daemon=True
                 )
                 self._thread.start()
-                atexit.register(self.flush)
+                atexit.register(self._flush_at_exit)
 
     def _drain(self) -> None:
         while (item := self._queue.get()) is not None:
