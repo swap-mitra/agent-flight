@@ -12,8 +12,18 @@ dependencies = ["pydantic>=2"]
 [project.scripts]
 fr = "flight_recorder.cli:main"
 
+[project.optional-dependencies]
+openai = [
+    "openai>=1",
+]
+
 [dependency-groups]
-dev = ["pytest>=8", "ruff", "pyright"]
+dev = [
+    "pytest>=8",
+    "ruff",
+    "pyright",
+    "openai>=1",
+]
 
 [build-system]
 requires = ["uv_build>=0.13.1,<0.14.0"]

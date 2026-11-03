@@ -70,7 +70,7 @@ class PendingStep:
     kind: Literal["model", "tool"]
     started: float
     parent_seq: int | None
-    token: Token[tuple[str, int] | None]
+    token: Token[tuple[str, int] | None] | None
 
 
 @dataclass
@@ -81,12 +81,20 @@ class ActiveRun:
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _next_seq: int = 0
     _error_logged: bool = False
+    _on_finish: list[Callable[[], None]] = field(
+        default_factory=list[Callable[[], None]]
+    )
 
     def start(self) -> None:
         if (run := self._redacted(self.run)) is not None:
             self._emit(lambda sink: sink.run_started(run))
 
     def finish(self, failed: bool) -> None:
+        for callback in self._on_finish:
+            try:
+                callback()
+            except Exception as exc:  # noqa: BLE001  recording fails open (FR-R9)
+                self.log_failure(exc)
         self.run.status = "error" if failed else "ok"
         self.run.output = jsonable(self.run.output)
         if (run := self._redacted(self.run)) is not None:
@@ -101,6 +109,24 @@ class ActiveRun:
         token = _open_step.set((self.run.run_id, seq))
         return PendingStep(seq, kind, time.perf_counter(), parent_seq, token)
 
+    def release(self, pending: PendingStep) -> None:
+        """Stop treating ``pending`` as the open step while it stays pending.
+
+        A stream's step closes only when the caller finishes reading it; calls
+        made meanwhile are the caller's, not children of the stream.
+        """
+        if pending.token is not None:
+            # ValueError: released in another context (a stream read elsewhere),
+            # whose open step was never this one, so there is nothing to restore.
+            with contextlib.suppress(ValueError):
+                _open_step.reset(pending.token)
+            pending.token = None
+
+    def on_finish(self, callback: Callable[[], None]) -> None:
+        """Call ``callback`` when the run ends, before its footer is written."""
+        with self._lock:
+            self._on_finish.append(callback)
+
     def close_step(
         self,
         pending: PendingStep,
@@ -109,10 +135,7 @@ class ActiveRun:
         model: ModelCall | None = None,
         tool: ToolCall | None = None,
     ) -> None:
-        # ValueError: closed in another context (e.g. a stream consumed elsewhere),
-        # whose open step was never this one, so there is nothing to restore.
-        with contextlib.suppress(ValueError):
-            _open_step.reset(pending.token)
+        self.release(pending)
         try:
             step = Step(
                 seq=pending.seq,
@@ -125,7 +148,7 @@ class ActiveRun:
             )
             self._add_to_totals(step)
         except Exception as exc:  # noqa: BLE001  recording fails open (FR-R9)
-            self._log_failure(exc)
+            self.log_failure(exc)
             return
         if (redacted := self._redacted(step)) is not None:
             run_id = self.run.run_id
@@ -153,7 +176,7 @@ class ActiveRun:
                 redact.apply(record.model_dump(mode="json"))
             )
         except Exception as exc:  # noqa: BLE001  never write what was not redacted
-            self._log_failure(exc)
+            self.log_failure(exc)
             return None
 
     def _emit(self, call: Callable[[Sink], None]) -> None:
@@ -161,9 +184,10 @@ class ActiveRun:
             try:
                 call(sink)
             except Exception as exc:  # noqa: BLE001  recording fails open (FR-R9)
-                self._log_failure(exc)
+                self.log_failure(exc)
 
-    def _log_failure(self, exc: Exception) -> None:
+    def log_failure(self, exc: Exception) -> None:
+        """Log a recording failure; only the first per run is logged."""
         with self._lock:
             if self._error_logged:
                 return
