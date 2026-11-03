@@ -12,20 +12,19 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from contextvars import ContextVar, Token
 from contextvars import copy_context as _copy_context
 from types import TracebackType
-from typing import ParamSpec, TypeVar
-
-from pydantic import JsonValue
+from typing import Any, ParamSpec, TypeVar
 
 from flight_recorder.model import Run
+from flight_recorder.recorder import ActiveRun, jsonable
 
 P = ParamSpec("P")
 T = TypeVar("T")
 
-_current: ContextVar[Run | None] = ContextVar("flight_recorder_run", default=None)
+_current: ContextVar[ActiveRun | None] = ContextVar("flight_recorder_run", default=None)
 
 
-def current_run() -> Run | None:
-    """The run open in this context, or None outside any run."""
+def active_run() -> ActiveRun | None:
+    """The run being recorded in this context, or None outside any run."""
     return _current.get()
 
 
@@ -48,20 +47,23 @@ class run:
     or ``error`` if the block raised; the exception propagates unchanged.
     """
 
-    def __init__(self, name: str, inputs: JsonValue = None) -> None:
+    def __init__(self, name: str, inputs: Any = None) -> None:
         parent = _current.get()
-        self.run = Run(
-            run_id=uuid7(),
-            name=name,
-            parent_run_id=parent.run_id if parent else None,
-            status="incomplete",
-            inputs=inputs,
+        self._active = ActiveRun(
+            Run(
+                run_id=uuid7(),
+                name=name,
+                parent_run_id=parent.run.run_id if parent else None,
+                status="incomplete",
+                inputs=jsonable(inputs),
+            )
         )
-        self._token: Token[Run | None] | None = None
+        self._token: Token[ActiveRun | None] | None = None
 
     def __enter__(self) -> Run:
-        self._token = _current.set(self.run)
-        return self.run
+        self._token = _current.set(self._active)
+        self._active.start()
+        return self._active.run
 
     def __exit__(
         self,
@@ -69,9 +71,9 @@ class run:
         exc: BaseException | None,
         tb: TracebackType | None,
     ) -> None:
-        self.run.status = "ok" if exc is None else "error"
         assert self._token is not None
         _current.reset(self._token)
+        self._active.finish(failed=exc is not None)
 
     async def __aenter__(self) -> Run:
         return self.__enter__()

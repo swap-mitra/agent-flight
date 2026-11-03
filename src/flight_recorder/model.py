@@ -4,7 +4,7 @@ A cassette holds a Run header, one Step per line, then a footer. These models
 validate that file at the boundary, so everything behind it can trust the data.
 """
 
-from typing import Literal, Self
+from typing import Any, Literal, Self
 
 from pydantic import BaseModel, JsonValue, model_validator
 
@@ -86,6 +86,8 @@ class Run(BaseModel):
     parent_run_id: str | None = None
     status: Literal["ok", "error", "denied", "incomplete"]
     inputs: JsonValue
-    output: JsonValue | None = None
+    # Agent code sets this to any value; it is converted to JSON when the run
+    # closes. A cassette only ever holds JSON, so loading loses no validation.
+    output: Any = None
     tags: dict[str, str] = {}
     totals: Totals = Totals()

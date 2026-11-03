@@ -7,7 +7,13 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 
 import flight_recorder as fr
-from flight_recorder.context import current_run, uuid7
+from flight_recorder.context import active_run, uuid7
+from flight_recorder.model import Run
+
+
+def current_run() -> Run | None:
+    active = active_run()
+    return active.run if active else None
 
 
 def test_run_is_current_inside_the_block_only() -> None:
