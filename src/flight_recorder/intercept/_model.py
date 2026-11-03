@@ -18,6 +18,14 @@ from flight_recorder.recorder import ActiveRun, PendingStep, error_info, jsonabl
 TRANSPORT = ("extra_headers", "extra_query", "timeout")
 
 
+class Part(NamedTuple):
+    """Tokens one model spent within a call, priced at that model's rates."""
+
+    model: str
+    usage: Usage
+    cache_write_1h: int = 0
+
+
 class Read(NamedTuple):
     """What a provider reads from a response or a stream's chunks."""
 
@@ -27,6 +35,9 @@ class Read(NamedTuple):
     cache_write_1h: int = 0  # of usage.cache_write_tokens, priced apart
     unpriced: str | None = None  # a pricing modifier the table can't express
     web_searches: int = 0  # server-side searches, billed per search
+    # When the provider bills a call as several parts (an advisor model, a
+    # compaction), the parts replace usage for pricing.
+    parts: tuple[Part, ...] = ()
 
 
 class Request:
@@ -100,14 +111,31 @@ class Request:
         elif read.usage is None:
             cost = None
         else:
-            cost = pricing.cost(
-                self.provider,
-                model_used,
-                read.usage,
-                cache_write_1h=read.cache_write_1h,
-                web_searches=read.web_searches,
-                unpriced=read.unpriced,
-            )
+            parts = read.parts or (Part(model_used, read.usage, read.cache_write_1h),)
+            costs = [
+                pricing.cost(
+                    self.provider,
+                    part.model,
+                    part.usage,
+                    cache_write_1h=part.cache_write_1h,
+                    unpriced=read.unpriced,
+                )
+                for part in parts
+            ]
+            if read.web_searches:
+                no_tokens = Usage(input_tokens=0, output_tokens=0)
+                costs.append(
+                    pricing.cost(
+                        self.provider,
+                        model_used,
+                        no_tokens,
+                        web_searches=read.web_searches,
+                    )
+                )
+            if any(c is None for c in costs):
+                cost = None
+            else:
+                cost = sum(c or 0.0 for c in costs)
         return ModelCall(
             provider=self.provider,
             model_requested=self.model,

@@ -102,7 +102,9 @@ class Server:
         fail: bool = False,
         error_mid_stream: bool = False,
         usage: dict[str, Any] = USAGE,
+        replies: list[dict[str, Any]] | None = None,
     ) -> None:
+        self.replies = replies or []  # message fields for each plain reply, in turn
         self.requests = 0
         self.bodies: list[dict[str, Any]] = []
         self.fail = fail
@@ -122,10 +124,13 @@ class Server:
                 },
             )
         if not body.get("stream"):
-            text = ORDER_JSON if "output_config" in body else "shipped"
+            structured = "output_config" in body or "output_format" in body
+            text = ORDER_JSON if structured else "shipped"
             content = [{"type": "text", "text": text}]
+            reply = self.replies.pop(0) if self.replies else {}
             return httpx2.Response(
-                200, json={**MESSAGE, "content": content, "usage": self.usage}
+                200,
+                json={**MESSAGE, "content": content, "usage": self.usage, **reply},
             )
         sse = "".join(
             f"event: {e['type']}\ndata: {json.dumps(e)}\n\n"
@@ -459,3 +464,123 @@ def test_web_searches_add_their_fee_to_the_token_cost(sink: Sink, priced: None) 
     for step in sink.steps:
         assert model_of(step).cost_usd == pytest.approx(29.25 / 1_000_000 + fee)
     assert len(sink.steps) == 2
+
+
+def test_beta_create_parse_and_stream_are_recorded(sink: Sink) -> None:
+    server = Server()
+    llm = client(server)
+    with fr.run("triage"):
+        llm.beta.messages.create(**ASK)
+        llm.beta.messages.parse(**ASK, output_format=Order)
+        with llm.beta.messages.stream(**ASK) as stream:
+            stream.until_done()
+
+    created, parsed, streamed = (model_of(s) for s in sink.steps)
+    sent = server.bodies[1]
+    sent_format = sent["output_config"]["format"] if "output_config" in sent else None
+    assert parsed.params["output_format"] == (sent_format or sent["output_format"])
+    for call in (created, parsed, streamed):
+        assert (call.finish_reason, call.usage.input_tokens) == ("end_turn", 112)
+
+
+@anthropic.beta_tool
+@fr.tool(effect="read")
+def lookup_order(order_id: str) -> str:
+    """Look up an order's status."""
+    return "shipped"
+
+
+def test_tool_runner_records_each_model_turn_and_tool_call(sink: Sink) -> None:
+    use = {"type": "tool_use", "id": "t1", "name": "lookup_order"}
+    use = {**use, "input": {"order_id": "o1"}}
+    server = Server(replies=[{"content": [use], "stop_reason": "tool_use"}])
+    llm = client(server)
+    with fr.run("triage"):
+        beta: Any = llm.beta.messages  # tool_runner's overloads need literal kwargs
+        runner = beta.tool_runner(**ASK, tools=[lookup_order])
+        final = runner.until_done()
+
+    assert final.stop_reason == "end_turn"
+    assert [s.kind for s in sink.steps] == ["model", "tool", "model"]
+    assert [model_of(s).finish_reason for s in sink.steps if s.model] == [
+        "tool_use",
+        "end_turn",
+    ]
+
+
+@pytest.fixture
+def two_models(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    prices = tmp_path / "prices.toml"
+    prices.write_text(
+        '[anthropic]\n"claude-x" = { input = 1.0, output = 2.0 }\n'
+        '"claude-advisor" = { input = 10.0, output = 20.0 }\n'
+    )
+    monkeypatch.setattr(pricing, "table", pricing.load(prices))
+
+
+def iteration(kind: str, tokens_in: int, tokens_out: int, **extra: Any) -> Any:
+    return {
+        "type": kind,
+        "input_tokens": tokens_in,
+        "output_tokens": tokens_out,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        **extra,
+    }
+
+
+def test_iterations_are_priced_at_each_models_rates(
+    sink: Sink, two_models: None
+) -> None:
+    usage = {
+        "input_tokens": 10,
+        "output_tokens": 3,
+        "iterations": [
+            iteration("message", 10, 3, model=MODEL),
+            iteration("advisor_message", 100, 5, model="claude-advisor"),
+            # Not part of the top-level usage, billed all the same.
+            iteration("compaction", 20, 2),
+        ],
+    }
+    llm = client(Server(usage=usage))
+    with fr.run("triage"):
+        llm.beta.messages.create(**ASK)
+        list(llm.beta.messages.create(**ASK, stream=True))
+
+    # Per million: 10 x $1 + 3 x $2, then 100 x $10 + 5 x $20, then 20 x $1 + 2 x $2.
+    for step in sink.steps:
+        assert model_of(step).usage.input_tokens == 10  # as the API reports it
+        assert model_of(step).cost_usd == pytest.approx(1140 / 1_000_000)
+    assert len(sink.steps) == 2
+
+
+def test_refusal_fallback_iteration_records_null_cost(
+    sink: Sink, two_models: None, caplog: pytest.LogCaptureFixture
+) -> None:
+    usage = {
+        "input_tokens": 10,
+        "output_tokens": 3,
+        "iterations": [
+            iteration("message", 10, 0, model=MODEL),
+            iteration("fallback_message", 10, 3, model="claude-advisor"),
+        ],
+    }
+    llm = client(Server(usage=usage))
+    with fr.run("triage"):
+        llm.beta.messages.create(**ASK)
+
+    assert model_of(sink.steps[0]).cost_usd is None
+    assert "used a fallback_message iteration" in caplog.text
+
+
+def test_async_beta_create_and_stream(sink: Sink) -> None:
+    llm = async_client(Server())
+
+    async def agent() -> None:
+        async with fr.run("triage"):
+            await llm.beta.messages.create(**ASK)
+            async with llm.beta.messages.stream(**ASK) as stream:
+                await stream.until_done()
+
+    asyncio.run(agent())
+    assert [model_of(s).usage.input_tokens for s in sink.steps] == [112, 112]
