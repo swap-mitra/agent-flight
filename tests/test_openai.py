@@ -105,12 +105,14 @@ class Server:
         error_mid_stream: bool = False,
         tier: str = "default",
         structured: bool = True,
+        output: list[dict[str, Any]] | None = None,
     ) -> None:
         self.bodies: list[dict[str, Any]] = []
         self.fail = fail
         self.error_mid_stream = error_mid_stream
         self.tier = tier
         self.structured = structured
+        self.response = {**RESPONSE, "output": output or []}  # Responses API reply
 
     def __call__(self, request: httpx2.Request) -> httpx2.Response:
         body = json.loads(request.content)
@@ -125,7 +127,7 @@ class Server:
                     else COMPLETION
                 )
                 if request.url.path.endswith("/chat/completions")
-                else RESPONSE
+                else self.response
             )
             return httpx2.Response(200, json={**payload, "service_tier": self.tier})
         headers = {"content-type": "text/event-stream"}
@@ -134,12 +136,16 @@ class Server:
                 {
                     "type": "response.created",
                     "sequence_number": 0,
-                    "response": {**RESPONSE, "status": "in_progress", "usage": None},
+                    "response": {
+                        **self.response,
+                        "status": "in_progress",
+                        "usage": None,
+                    },
                 },
                 {
                     "type": "response.completed",
                     "sequence_number": 1,
-                    "response": RESPONSE,
+                    "response": self.response,
                 },
             ]
             return httpx2.Response(
@@ -553,3 +559,23 @@ def test_async_parse_and_raw_response(sink: Sink) -> None:
 
     assert asyncio.run(agent()) == Order(status="shipped")
     assert [model_of(s).usage.input_tokens for s in sink.steps] == [12, 12, 12]
+
+
+def test_built_in_tool_fees_record_null_instead_of_an_undercount(
+    sink: Sink, priced: None, caplog: pytest.LogCaptureFixture
+) -> None:
+    search = {
+        "type": "web_search_call",
+        "id": "ws1",
+        "status": "completed",
+        "action": {"type": "search", "query": "order o1"},
+    }
+    llm = client(Server(output=[search]))
+    with fr.run("triage"):
+        llm.responses.create(model="gpt-x", input="hi")
+        list(llm.responses.create(model="gpt-x", input="hi", stream=True))
+        llm.chat.completions.create(model="gpt-x", messages=[], web_search_options={})
+
+    assert [model_of(s).cost_usd for s in sink.steps] == [None, None, None]
+    assert caplog.text.count("used web_search_call") == 1
+    assert caplog.text.count("used web_search_options") == 1

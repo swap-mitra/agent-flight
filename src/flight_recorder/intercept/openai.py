@@ -49,9 +49,8 @@ class _Chat(_OpenAI):
 
     def read_response(self, response: Any) -> Read:
         finish = response.choices[0].finish_reason if response.choices else None
-        return Read(
-            response.model, finish, _usage(response.usage), unpriced=_tier(response)
-        )
+        unpriced = _join(_tier(response), self._searched())
+        return Read(response.model, finish, _usage(response.usage), unpriced=unpriced)
 
     def read_chunks(self, chunks: list[Any]) -> Read:
         model, finish, usage, tier = self.model, None, None, None
@@ -61,7 +60,11 @@ class _Chat(_OpenAI):
                 finish = chunk.choices[0].finish_reason
             usage = _usage(chunk.usage) or usage
             tier = _tier(chunk) or tier
-        return Read(model, finish, usage, unpriced=tier)
+        return Read(model, finish, usage, unpriced=_join(tier, self._searched()))
+
+    def _searched(self) -> str | None:
+        # Chat web search bills per request on top of tokens (row 1.11a).
+        return "web_search_options" if "web_search_options" in self.params else None
 
 
 class _Responses(_OpenAI):
@@ -81,7 +84,13 @@ class _Responses(_OpenAI):
                 output_tokens=usage.output_tokens,
                 cache_read_tokens=(cached and cached.cached_tokens) or 0,
             )
-        return Read(response.model, finish, usage, unpriced=_tier(response))
+        tools = sorted({i.type for i in response.output if i.type in _FEE_TOOLS})
+        return Read(
+            response.model,
+            finish,
+            usage,
+            unpriced=_join(_tier(response), *tools),
+        )
 
     def read_chunks(self, chunks: list[Any]) -> Read:
         # The final event carries the whole response.
@@ -100,6 +109,16 @@ def _usage(usage: Any) -> Usage | None:
         output_tokens=usage.completion_tokens,
         cache_read_tokens=(cached and cached.cached_tokens) or 0,
     )
+
+
+# ponytail: built-in tools OpenAI bills per call or per session on top of
+# tokens. Their fees are not in the table yet, so a call using one records a
+# null cost instead of an undercount (row 1.11a prices them).
+_FEE_TOOLS = ("web_search_call", "file_search_call", "code_interpreter_call")
+
+
+def _join(*reasons: str | None) -> str | None:
+    return ", ".join(r for r in reasons if r) or None
 
 
 def _tier(response: Any) -> str | None:
