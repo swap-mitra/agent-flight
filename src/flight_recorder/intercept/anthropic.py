@@ -107,10 +107,12 @@ def _billing(usage: Any) -> tuple[int, str | None]:
 
 def wrap(client: Anthropic | AsyncAnthropic) -> None:
     """Record every model call this client's ``messages`` resource makes."""
-    messages: Any = client.messages
+    _wrap_messages(client.messages, isinstance(client, AsyncAnthropic), _STREAM_HOOK)
+
+
+def _wrap_messages(messages: Any, is_async: bool, hooks: dict[bool, str]) -> None:
     if wrapped(messages.create):
         return
-    is_async = isinstance(client, AsyncAnthropic)
     stream = messages.stream
     stream_type = AsyncStream if is_async else Stream
 
@@ -136,7 +138,7 @@ def wrap(client: Anthropic | AsyncAnthropic) -> None:
     # the stream (events, text_stream, get_final_message). Contract tests fail
     # loudly if an SDK version renames it; production then records nothing
     # for the call and logs once.
-    hook = _STREAM_HOOK[is_async]
+    hook = hooks[is_async]
 
     @functools.wraps(stream)
     def new_stream(**kwargs: Any) -> Any:
@@ -147,10 +149,10 @@ def wrap(client: Anthropic | AsyncAnthropic) -> None:
                 active.log_failure(AttributeError(f"stream manager has no {hook}"))
             return manager
         if is_async:
-            recorded = acall(_Messages, kwargs, lambda _: send, stream_type)
+            sent = acall(_Messages, kwargs, lambda _: send, stream_type)
         else:
-            recorded = lambda: call(_Messages, kwargs, lambda _: send(), stream_type)
-        setattr(manager, hook, recorded)
+            sent = lambda: call(_Messages, kwargs, lambda _: send(), stream_type)
+        setattr(manager, hook, sent)
         return manager
 
     messages.create = mark(recorded(messages.create))
