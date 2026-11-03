@@ -350,7 +350,7 @@ def priced(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     prices = tmp_path / "prices.toml"
     prices.write_text(
         '[anthropic]\n"claude-x" = { input = 1.0, output = 2.0, cache_read = 0.1,'
-        " cache_write = 1.25, cache_write_1h = 2.0 }\n"
+        " cache_write = 1.25, cache_write_1h = 2.0, web_search = 10.0 }\n"
     )
     monkeypatch.setattr(pricing, "table", pricing.load(prices))
 
@@ -446,3 +446,16 @@ def test_async_parse_and_streaming_response(sink: Sink) -> None:
 
     assert asyncio.run(agent()) == Order(status="shipped")
     assert [model_of(s).usage.input_tokens for s in sink.steps] == [112, 112]
+
+
+def test_web_searches_add_their_fee_to_the_token_cost(sink: Sink, priced: None) -> None:
+    tools = {"web_search_requests": 2, "web_fetch_requests": 1}  # fetch is free
+    llm = client(Server(usage={**USAGE, "server_tool_use": tools}))
+    with fr.run("triage"):
+        llm.messages.create(**ASK)
+        list(llm.messages.create(**ASK, stream=True))
+
+    fee = 2 * 10.0 / 1000
+    for step in sink.steps:
+        assert model_of(step).cost_usd == pytest.approx(29.25 / 1_000_000 + fee)
+    assert len(sink.steps) == 2

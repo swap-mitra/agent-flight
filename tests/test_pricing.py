@@ -88,3 +88,10 @@ def test_invalid_pricing_file_fails_at_configure_and_changes_nothing(
     with pytest.raises(PricingError, match="prices.toml"):
         fr.configure(dir=tmp_path, pricing=prices)
     assert pricing.table is pricing.SHIPPED
+
+
+def test_web_searches_are_billed_per_search_on_top_of_tokens() -> None:
+    usage = Usage(input_tokens=M, output_tokens=0)
+    cost = pricing.cost("anthropic", "claude-opus-5-5", usage, web_searches=3)
+    assert cost == pytest.approx(4.0 + 3 * 10.0 / 1000)
+    assert pricing.cost("openai", "gpt-5", usage, web_searches=1) is None

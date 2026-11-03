@@ -26,6 +26,7 @@ class Read(NamedTuple):
     usage: Usage | None
     cache_write_1h: int = 0  # of usage.cache_write_tokens, priced apart
     unpriced: str | None = None  # a pricing modifier the table can't express
+    web_searches: int = 0  # server-side searches, billed per search
 
 
 class Request:
@@ -104,6 +105,7 @@ class Request:
                 model_used,
                 read.usage,
                 cache_write_1h=read.cache_write_1h,
+                web_searches=read.web_searches,
                 unpriced=read.unpriced,
             )
         return ModelCall(

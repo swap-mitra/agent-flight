@@ -39,70 +39,73 @@ class _Messages(Request):
         return {"schema": transform_schema(schema), "type": "json_schema"}
 
     def read_response(self, response: Any) -> Read:
-        usage = response.usage
-        return Read(
-            response.model,
-            response.stop_reason,
-            _usage(_counts(usage)),
-            *_billing(usage),
-        )
+        return _read(response.model, response.stop_reason, _fields(response.usage))
 
     def read_chunks(self, chunks: list[Any]) -> Read:
-        model, finish, start = self.model, None, None
-        counts: dict[str, int | None] = {}
+        model, finish = self.model, None
+        fields: dict[str, Any] | None = None
         for event in chunks:
             if event.type == "message_start":
-                model, start = event.message.model, event.message.usage
-                counts = _counts(start)
+                model, fields = event.message.model, _fields(event.message.usage)
             elif event.type == "message_delta":
                 finish = event.delta.stop_reason or finish
-                # Cumulative counts; a field the delta omits keeps its start value.
-                latest = _counts(event.usage)
-                counts.update({k: v for k, v in latest.items() if v is not None})
-        if start is None:
+                # Cumulative; a field the delta omits keeps its start value.
+                if fields is not None:
+                    latest = _fields(event.usage).items()
+                    fields.update({k: v for k, v in latest if v is not None})
+        if fields is None:
             return Read(model, finish, None)
-        return Read(model, finish, _usage(counts), *_billing(start))
+        return _read(model, finish, fields)
 
 
-_COUNTS = (
+# The usage fields read, from a response or a stream's start and deltas.
+_FIELDS = (
     "input_tokens",
     "cache_creation_input_tokens",
     "cache_read_input_tokens",
     "output_tokens",
+    "cache_creation",
+    "server_tool_use",
+    "service_tier",
+    "speed",
+    "inference_geo",
 )
 
 
-def _counts(usage: Any) -> dict[str, int | None]:
-    return {name: getattr(usage, name, None) for name in _COUNTS}
+def _fields(usage: Any) -> dict[str, Any]:
+    return {name: getattr(usage, name, None) for name in _FIELDS}
 
 
-def _usage(counts: dict[str, int | None]) -> Usage:
+def _read(model: str, finish: str | None, fields: dict[str, Any]) -> Read:
     # Anthropic counts cached prompt tokens apart from input_tokens; Usage's
     # input_tokens is the whole prompt, comparable with OpenAI.
-    read = counts["cache_read_input_tokens"] or 0
-    write = counts["cache_creation_input_tokens"] or 0
-    return Usage(
-        input_tokens=(counts["input_tokens"] or 0) + read + write,
-        output_tokens=counts["output_tokens"] or 0,
+    read = fields["cache_read_input_tokens"] or 0
+    write = fields["cache_creation_input_tokens"] or 0
+    usage = Usage(
+        input_tokens=(fields["input_tokens"] or 0) + read + write,
+        output_tokens=fields["output_tokens"] or 0,
         cache_read_tokens=read,
         cache_write_tokens=write,
     )
-
-
-def _billing(usage: Any) -> tuple[int, str | None]:
-    """One-hour cache writes, and any modifier the pricing table doesn't price."""
-    cache = getattr(usage, "cache_creation", None)
-    one_hour = cache.ephemeral_1h_input_tokens if cache is not None else 0
+    cache, tools = fields["cache_creation"], fields["server_tool_use"]
     modifiers = [
-        f"{name} {value!r}"
+        f"{name} {fields[name]!r}"
         for name, standard in (
             ("service_tier", "standard"),
             ("speed", "standard"),
             ("inference_geo", "global"),
         )
-        if (value := getattr(usage, name, None)) not in (None, standard)
+        if fields[name] not in (None, standard)
     ]
-    return one_hour, ", ".join(modifiers) or None
+    return Read(
+        model,
+        finish,
+        usage,
+        cache_write_1h=cache.ephemeral_1h_input_tokens if cache is not None else 0,
+        unpriced=", ".join(modifiers) or None,
+        # Web fetch is free; code execution hours are billed per organisation.
+        web_searches=tools.web_search_requests if tools is not None else 0,
+    )
 
 
 def wrap(client: Anthropic | AsyncAnthropic) -> None:

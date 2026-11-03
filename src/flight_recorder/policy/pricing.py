@@ -35,6 +35,7 @@ class LongContext(Rates):
 
 
 class Entry(Rates):
+    web_search: float | None = None  # USD per 1,000 searches, at any prompt size
     long_context: LongContext | None = None
 
 
@@ -85,13 +86,15 @@ def cost(
     usage: Usage,
     *,
     cache_write_1h: int = 0,
+    web_searches: int = 0,
     unpriced: str | None = None,
 ) -> float | None:
     """USD cost of one call, or None (warned once) when it cannot be priced.
 
     ``cache_write_1h`` is the part of ``usage.cache_write_tokens`` written to a
-    one-hour cache; ``unpriced`` names a modifier the call used that the table
-    cannot express, such as a non-standard service tier.
+    one-hour cache; ``web_searches`` counts the provider's server-side searches;
+    ``unpriced`` names a modifier the call used that the table cannot express,
+    such as a non-standard service tier.
     """
     models = table.get(provider, {})
     entry = models.get(model) or models.get(_DATE.sub("", model))
@@ -118,7 +121,12 @@ def cost(
             if rate is None:
                 return _unpriced(f"no {name} price for {provider} model {model!r}")
             total += count * rate
-    return total / 1_000_000
+    fee = 0.0
+    if web_searches:
+        if entry.web_search is None:
+            return _unpriced(f"no web_search price for {provider} model {model!r}")
+        fee = web_searches * entry.web_search / 1000
+    return total / 1_000_000 + fee
 
 
 def _unpriced(reason: str) -> None:
