@@ -17,7 +17,7 @@ from typing import Any, Literal, Protocol
 from pydantic import JsonValue
 from pydantic_core import to_jsonable_python
 
-from flight_recorder.model import ModelCall, Run, Step, ToolCall
+from flight_recorder.model import ErrorInfo, ModelCall, Run, Step, ToolCall
 
 logger = logging.getLogger("flight_recorder")
 
@@ -47,6 +47,15 @@ def jsonable(value: Any) -> JsonValue:
 _open_step: ContextVar[tuple[str, int] | None] = ContextVar(
     "flight_recorder_step", default=None
 )
+
+
+def error_info(exc: BaseException) -> ErrorInfo:
+    """Record an exception by type and message; builtins keep their short name."""
+    cls = type(exc)
+    name = cls.__qualname__
+    if cls.__module__ != "builtins":
+        name = f"{cls.__module__}.{name}"
+    return ErrorInfo(type=name, message=str(exc))
 
 
 @dataclass
