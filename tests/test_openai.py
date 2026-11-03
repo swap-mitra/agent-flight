@@ -9,7 +9,8 @@ import httpx2
 import openai
 import pytest
 from openai import AsyncOpenAI, OpenAI
-from openai.types.chat import ChatCompletion
+from openai.types.chat import ChatCompletion, ParsedChatCompletion
+from pydantic import BaseModel
 
 import flight_recorder as fr
 from flight_recorder import recorder
@@ -58,6 +59,23 @@ RESPONSE: dict[str, Any] = {
 }
 
 
+class Order(BaseModel):
+    status: str
+
+
+ORDER_JSON = '{"status": "shipped"}'
+STRUCTURED: dict[str, Any] = {
+    **COMPLETION,
+    "choices": [
+        {
+            "index": 0,
+            "message": {"role": "assistant", "content": ORDER_JSON},
+            "finish_reason": "stop",
+        }
+    ],
+}
+
+
 def chunk(content: str | None, finish: str | None = None) -> dict[str, Any]:
     return {
         "id": "c1",
@@ -82,12 +100,17 @@ class Server:
     """Answers like the OpenAI API and keeps every request body."""
 
     def __init__(
-        self, fail: bool = False, error_mid_stream: bool = False, tier: str = "default"
+        self,
+        fail: bool = False,
+        error_mid_stream: bool = False,
+        tier: str = "default",
+        structured: bool = True,
     ) -> None:
         self.bodies: list[dict[str, Any]] = []
         self.fail = fail
         self.error_mid_stream = error_mid_stream
         self.tier = tier
+        self.structured = structured
 
     def __call__(self, request: httpx2.Request) -> httpx2.Response:
         body = json.loads(request.content)
@@ -96,7 +119,11 @@ class Server:
             return httpx2.Response(500, json={"error": {"message": "overloaded"}})
         if not body.get("stream"):
             payload = (
-                COMPLETION
+                (
+                    STRUCTURED
+                    if "response_format" in body and self.structured
+                    else COMPLETION
+                )
                 if request.url.path.endswith("/chat/completions")
                 else RESPONSE
             )
@@ -118,10 +145,16 @@ class Server:
             return httpx2.Response(
                 200, headers=headers, content=sse(events, named=True)
             )
-        events = [chunk("ship")]
+        # Structured output streams JSON, in two pieces like the plain text.
+        first, rest = (
+            ('{"status": ', '"shipped"}')
+            if "response_format" in body
+            else ("ship", "ped")
+        )
+        events = [chunk(first)]
         if self.error_mid_stream:
             events.append({"error": {"message": "stream broke"}})
-        events.append(chunk("ped", "stop"))
+        events.append(chunk(rest, "stop"))
         if body.get("stream_options", {}).get("include_usage"):
             events.append({**chunk(None), "choices": [], "usage": USAGE_CHAT})
         events = [{**e, "service_tier": self.tier} for e in events]
@@ -373,3 +406,150 @@ def test_unpriced_service_tier_records_null_cost(
 
     assert [model_of(s).cost_usd for s in sink.steps] == [None, None]
     assert caplog.text.count("used service_tier 'flex'") == 1
+
+
+def test_chat_parse_records_the_schema_it_sends(sink: Sink) -> None:
+    server = Server()
+    llm = client(server)
+    with fr.run("triage"):
+        result = llm.chat.completions.parse(
+            model="gpt-x", messages=[], response_format=Order
+        )
+
+    assert isinstance(result, ParsedChatCompletion)
+    assert result.choices[0].message.parsed == Order(status="shipped")
+    (step,) = sink.steps
+    call = model_of(step)
+    assert call.params["response_format"] == server.bodies[0]["response_format"]
+    assert call.params["response_format"]["json_schema"]["name"] == "Order"
+    assert call.response["choices"][0]["message"]["parsed"] == {"status": "shipped"}
+    assert call.usage.input_tokens == 12
+
+
+def test_chat_stream_helper_is_recorded_like_create(sink: Sink) -> None:
+    server = Server()
+    llm = client(server)
+    with fr.run("triage"):
+        llm.chat.completions.parse(model="gpt-x", messages=[], response_format=Order)
+        with llm.chat.completions.stream(
+            model="gpt-x", messages=[], response_format=Order
+        ) as stream:
+            text = [e.delta for e in stream if e.type == "content.delta"]
+
+    assert "".join(text) == ORDER_JSON
+    parsed, streamed = (model_of(s) for s in sink.steps)
+    # The SDK's own "not given" markers are not recorded as parameters.
+    assert set(streamed.params) == {"stream", "response_format"}
+    assert streamed.params["response_format"] == parsed.params["response_format"]
+    assert server.bodies[1]["stream_options"] == {"include_usage": True}
+    assert (streamed.finish_reason, streamed.usage.output_tokens) == ("stop", 3)
+
+
+def test_responses_parse_and_stream_helper_are_recorded(sink: Sink) -> None:
+    llm = client(Server())
+    with fr.run("triage"):
+        llm.responses.parse(model="gpt-x", input="hi", text_format=Order)
+        with llm.responses.stream(model="gpt-x", input="hi") as stream:
+            stream.until_done()
+
+    parsed, streamed = (model_of(s) for s in sink.steps)
+    assert parsed.params["text_format"]["name"] == "Order"
+    for call in (parsed, streamed):
+        assert (call.finish_reason, call.usage.input_tokens) == ("completed", 12)
+
+
+def test_raw_response_is_recorded_when_parsed(sink: Sink) -> None:
+    llm = client(Server())
+    with fr.run("triage"):
+        raw = llm.chat.completions.with_raw_response.create(model="gpt-x", messages=[])
+        assert sink.steps == []  # not parsed yet
+        first, second = raw.parse(), raw.parse()
+
+    assert first is second and first.id == "c1"
+    (step,) = sink.steps
+    assert model_of(step).usage.input_tokens == 12
+    assert model_of(step).response["id"] == "c1"
+
+
+def test_raw_response_never_parsed_is_abandoned_before_the_footer(sink: Sink) -> None:
+    llm = client(Server())
+    with fr.run("triage"):
+        raw = llm.chat.completions.with_raw_response.create(model="gpt-x", messages=[])
+        assert raw.http_response.status_code == 200
+
+    (step,) = sink.steps
+    call = model_of(step)
+    assert (call.finish_reason, call.response, call.cost_usd) == (
+        "abandoned",
+        None,
+        None,
+    )
+    assert sink.events == ["start", "step", "finish"]
+
+
+def test_streaming_response_stays_lazy_and_records_the_parsed_stream(
+    sink: Sink,
+) -> None:
+    llm = client(Server())
+    with (
+        fr.run("triage"),
+        llm.chat.completions.with_streaming_response.create(
+            model="gpt-x", messages=[], stream=True
+        ) as response,
+    ):
+        seen = [c.choices[0].delta.content for c in response.parse()]
+
+    assert seen == ["ship", "ped"]
+    (step,) = sink.steps
+    assert (model_of(step).finish_reason, model_of(step).usage.input_tokens) == (
+        "stop",
+        12,
+    )
+
+
+def test_raw_wrapper_built_before_wrap_is_recorded(sink: Sink) -> None:
+    http = httpx2.Client(transport=httpx2.MockTransport(Server()))
+    llm = OpenAI(api_key="sk-test", http_client=http, max_retries=0)
+    raw_create = llm.chat.completions.with_raw_response.create  # cached by the SDK
+    fr.wrap(llm)
+    with fr.run("triage"):
+        llm.chat.completions.with_raw_response.create(
+            model="gpt-x", messages=[]
+        ).parse()
+
+    assert raw_create is not llm.chat.completions.with_raw_response.create
+    assert len(sink.steps) == 1
+
+
+def test_failure_after_a_response_is_not_priced_as_rejected(sink: Sink) -> None:
+    # The reply isn't valid JSON for Order: the SDK raises after the request
+    # was served and billed, so the cost is unknown, not 0.
+    llm = client(Server(structured=False))
+    with fr.run("triage"), pytest.raises(Exception) as caught:
+        llm.chat.completions.parse(model="gpt-x", messages=[], response_format=Order)
+
+    assert not isinstance(caught.value, openai.APIStatusError)
+    (step,) = sink.steps
+    assert (step.status, model_of(step).cost_usd) == ("error", None)
+
+
+def test_async_parse_and_raw_response(sink: Sink) -> None:
+    llm = async_client(Server())
+
+    async def agent() -> Order | None:
+        async with fr.run("triage"):
+            result = await llm.chat.completions.parse(
+                model="gpt-x", messages=[], response_format=Order
+            )
+            raw = await llm.chat.completions.with_raw_response.create(
+                model="gpt-x", messages=[]
+            )
+            raw.parse()
+            async with llm.chat.completions.with_streaming_response.create(
+                model="gpt-x", messages=[]
+            ) as response:
+                await response.parse()
+            return result.choices[0].message.parsed
+
+    assert asyncio.run(agent()) == Order(status="shipped")
+    assert [model_of(s).usage.input_tokens for s in sink.steps] == [12, 12, 12]

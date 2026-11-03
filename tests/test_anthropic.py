@@ -9,7 +9,8 @@ import anthropic
 import httpx2
 import pytest
 from anthropic import Anthropic, AsyncAnthropic
-from anthropic.types import Message
+from anthropic.types import Message, ParsedMessage
+from pydantic import BaseModel
 
 import flight_recorder as fr
 from flight_recorder import recorder
@@ -86,8 +87,15 @@ def events(
     ]
 
 
+class Order(BaseModel):
+    status: str
+
+
+ORDER_JSON = '{"status": "shipped"}'
+
+
 class Server:
-    """Answers like the Anthropic API and counts requests."""
+    """Answers like the Anthropic API and keeps every request body."""
 
     def __init__(
         self,
@@ -96,12 +104,15 @@ class Server:
         usage: dict[str, Any] = USAGE,
     ) -> None:
         self.requests = 0
+        self.bodies: list[dict[str, Any]] = []
         self.fail = fail
         self.error_mid_stream = error_mid_stream
         self.usage = usage
 
     def __call__(self, request: httpx2.Request) -> httpx2.Response:
         self.requests += 1
+        body = json.loads(request.content)
+        self.bodies.append(body)
         if self.fail:
             return httpx2.Response(
                 500,
@@ -110,14 +121,18 @@ class Server:
                     "error": {"type": "api_error", "message": "down"},
                 },
             )
-        if not json.loads(request.content).get("stream"):
-            return httpx2.Response(200, json={**MESSAGE, "usage": self.usage})
-        body = "".join(
+        if not body.get("stream"):
+            text = ORDER_JSON if "output_config" in body else "shipped"
+            content = [{"type": "text", "text": text}]
+            return httpx2.Response(
+                200, json={**MESSAGE, "content": content, "usage": self.usage}
+            )
+        sse = "".join(
             f"event: {e['type']}\ndata: {json.dumps(e)}\n\n"
             for e in events(self.error_mid_stream, self.usage)
         )
         return httpx2.Response(
-            200, headers={"content-type": "text/event-stream"}, content=body.encode()
+            200, headers={"content-type": "text/event-stream"}, content=sse.encode()
         )
 
 
@@ -384,3 +399,50 @@ def test_run_on_an_unpriced_model_has_null_cost_and_one_warning(
     assert [model_of(s).cost_usd for s in sink.steps] == [None, None]
     assert run.totals.cost_usd is None
     assert caplog.text.count("no price for anthropic model 'claude-x-2026-01-01'") == 1
+
+
+def test_parse_records_the_schema_it_sends(sink: Sink) -> None:
+    server = Server()
+    llm = client(server)
+    with fr.run("triage"):
+        result = llm.messages.parse(**ASK, output_format=Order)
+
+    assert isinstance(result, ParsedMessage)
+    assert result.parsed_output == Order(status="shipped")
+    (step,) = sink.steps
+    call = model_of(step)
+    assert call.params["output_format"] == server.bodies[0]["output_config"]["format"]
+    assert call.usage.input_tokens == 112
+
+
+def test_raw_and_streaming_responses_are_recorded_when_parsed(sink: Sink) -> None:
+    llm = client(Server())
+    with fr.run("triage"):
+        raw_api: Any = llm.messages.with_raw_response
+        streaming_api: Any = llm.messages.with_streaming_response
+        raw = raw_api.create(**ASK)
+        assert raw.parse() is raw.parse()
+        with streaming_api.create(**ASK, stream=True) as response:
+            types = [e.type for e in response.parse()]
+        raw_api.create(**ASK)  # never parsed
+
+    assert types == [e["type"] for e in events()]
+    plain, streamed, unparsed = (model_of(s) for s in sink.steps)
+    assert plain.usage.input_tokens == streamed.usage.input_tokens == 112
+    assert (streamed.finish_reason, len(streamed.response)) == ("end_turn", 7)
+    assert (unparsed.finish_reason, unparsed.response) == ("abandoned", None)
+
+
+def test_async_parse_and_streaming_response(sink: Sink) -> None:
+    llm = async_client(Server())
+
+    async def agent() -> Order | None:
+        async with fr.run("triage"):
+            result = await llm.messages.parse(**ASK, output_format=Order)
+            streaming_api: Any = llm.messages.with_streaming_response
+            async with streaming_api.create(**ASK) as response:
+                await response.parse()
+            return result.parsed_output
+
+    assert asyncio.run(agent()) == Order(status="shipped")
+    assert [model_of(s).usage.input_tokens for s in sink.steps] == [112, 112]

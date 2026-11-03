@@ -1,29 +1,48 @@
 """OpenAI client interception (FR-R1, FR-R2).
 
-``wrap`` replaces ``create`` on one client's ``chat.completions`` and
-``responses`` resources, so the client keeps its type and every other method.
+``wrap`` replaces ``create`` and ``parse`` on one client's ``chat.completions``
+and ``responses`` resources, so the client keeps its type and every other
+method. The SDK's ``stream()`` helpers call ``create`` on the same resource,
+and ``with_raw_response`` and ``with_streaming_response`` call these methods,
+so they are recorded too.
 """
 
 import functools
-from typing import Any
+from typing import Any, cast
 
+import openai
 from openai import AsyncOpenAI, AsyncStream, OpenAI, Stream
+from openai._legacy_response import LegacyAPIResponse
+from openai.lib._parsing import type_to_response_format_param
+from openai.lib._parsing._responses import type_to_text_format_param
 from pydantic import BaseModel
 
 from flight_recorder.intercept._model import Read, Request, acall, call, mark, wrapped
 from flight_recorder.model import Usage
 
 
-class _Chat(Request):
+# ponytail: the raw response class and the two format converters are SDK
+# internals. The contract tests fail loudly if a version moves them.
+class _OpenAI(Request):
     provider = "openai"
+    omitted = (openai.Omit, openai.NotGiven)
+    rejected = (openai.APIStatusError,)
+    raw = (LegacyAPIResponse, openai.APIResponse, openai.AsyncAPIResponse)
 
+
+class _Chat(_OpenAI):
     def __init__(self, kwargs: dict[str, Any]) -> None:
         super().__init__(kwargs)
         # A chat stream reports usage only when asked. Ask, and hide the extra
         # usage-only chunk, so the caller sees the chunks it would have seen.
-        self.ask_usage = kwargs.get("stream") is True and "stream_options" not in kwargs
+        self.ask_usage = kwargs.get("stream") is True and not self.given(
+            kwargs.get("stream_options")
+        )
         if self.ask_usage:
             self.kwargs = {**kwargs, "stream_options": {"include_usage": True}}
+
+    def format(self, value: type) -> Any:
+        return type_to_response_format_param(value)
 
     def hidden(self, chunk: Any) -> bool:
         return self.ask_usage and not chunk.choices and chunk.usage is not None
@@ -45,9 +64,11 @@ class _Chat(Request):
         return Read(model, finish, usage, unpriced=tier)
 
 
-class _Responses(Request):
-    provider = "openai"
+class _Responses(_OpenAI):
     messages_key = "input"
+
+    def format(self, value: type) -> Any:
+        return type_to_text_format_param(value)
 
     def read_response(self, response: Any) -> Read:
         details = response.incomplete_details
@@ -88,20 +109,24 @@ def _tier(response: Any) -> str | None:
 
 
 def wrap(client: OpenAI | AsyncOpenAI) -> None:
-    """Record every ``create`` call this client makes inside ``fr.run()``."""
+    """Record every model call this client makes inside ``fr.run()``."""
     resources: list[tuple[type[Request], Any]] = [
         (_Chat, client.chat.completions),
         (_Responses, client.responses),
     ]
     for request_type, resource in resources:
-        original = resource.create
-        if wrapped(original):
+        if wrapped(resource.create):
             continue
-        if isinstance(client, AsyncOpenAI):
-            create = _async_create(request_type, original)
-        else:
-            create = _sync_create(request_type, original)
-        setattr(resource, "create", mark(create))  # noqa: B010  shadows the method
+        for name in ("create", "parse"):
+            original = getattr(resource, name)
+            if isinstance(client, AsyncOpenAI):
+                method = _async_create(request_type, original)
+            else:
+                method = _sync_create(request_type, original)
+            setattr(resource, name, mark(method))
+        # Built on first use around the methods above; drop any built before.
+        for cached in ("with_raw_response", "with_streaming_response"):
+            cast(dict[str, Any], vars(resource)).pop(cached, None)
 
 
 def _sync_create(request_type: type[Request], original: Any) -> Any:

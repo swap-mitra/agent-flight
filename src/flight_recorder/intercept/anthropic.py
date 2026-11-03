@@ -1,13 +1,20 @@
 """Anthropic client interception (FR-R1, FR-R2).
 
-``wrap`` replaces ``create`` and ``stream`` on one client's ``messages``
-resource, so the client keeps its type and every other method.
+``wrap`` replaces ``create``, ``stream`` and ``parse`` on one client's
+``messages`` resource, so the client keeps its type and every other method.
+``with_raw_response`` and ``with_streaming_response`` call ``create``, so they
+are recorded too.
 """
 
 import functools
-from typing import Any
+from typing import Any, cast
 
+import anthropic
 from anthropic import Anthropic, AsyncAnthropic, AsyncStream, Stream
+from anthropic.lib._parse._transform import (  # pyright: ignore[reportMissingTypeStubs]
+    transform_schema,
+)
+from pydantic import TypeAdapter
 
 from flight_recorder.context import active_run
 from flight_recorder.intercept._model import Read, Request, acall, call, mark, wrapped
@@ -22,6 +29,14 @@ _STREAM_HOOK = {
 
 class _Messages(Request):
     provider = "anthropic"
+    omitted = (anthropic.Omit, anthropic.NotGiven)
+    rejected = (anthropic.APIStatusError,)
+    raw = (anthropic.APIResponse, anthropic.AsyncAPIResponse)
+
+    def format(self, value: type) -> Any:
+        # As messages.parse() does. ponytail: transform_schema is an SDK internal.
+        schema = TypeAdapter[Any](value).json_schema()
+        return {"schema": transform_schema(schema), "type": "json_schema"}
 
     def read_response(self, response: Any) -> Read:
         usage = response.usage
@@ -91,28 +106,30 @@ def _billing(usage: Any) -> tuple[int, str | None]:
 
 
 def wrap(client: Anthropic | AsyncAnthropic) -> None:
-    """Record every ``messages.create`` and ``messages.stream`` call."""
+    """Record every model call this client's ``messages`` resource makes."""
     messages: Any = client.messages
     if wrapped(messages.create):
         return
     is_async = isinstance(client, AsyncAnthropic)
-    create, stream = messages.create, messages.stream
+    stream = messages.stream
     stream_type = AsyncStream if is_async else Stream
 
-    if is_async:
+    def recorded(method: Any) -> Any:
+        if is_async:
 
-        @functools.wraps(create)
-        async def acreate(**kwargs: Any) -> Any:
-            return await acall(_Messages, kwargs, lambda kw: create(**kw), stream_type)
+            @functools.wraps(method)
+            async def arecorded(**kwargs: Any) -> Any:
+                return await acall(
+                    _Messages, kwargs, lambda kw: method(**kw), stream_type
+                )
 
-        new_create = acreate
-    else:
+            return arecorded
 
-        @functools.wraps(create)
-        def screate(**kwargs: Any) -> Any:
-            return call(_Messages, kwargs, lambda kw: create(**kw), stream_type)
+        @functools.wraps(method)
+        def srecorded(**kwargs: Any) -> Any:
+            return call(_Messages, kwargs, lambda kw: method(**kw), stream_type)
 
-        new_create = screate
+        return srecorded
 
     # ponytail: stream() returns a manager that sends its request on entry
     # through a private hook; replacing the hook records every way of reading
@@ -136,5 +153,9 @@ def wrap(client: Anthropic | AsyncAnthropic) -> None:
         setattr(manager, hook, recorded)
         return manager
 
-    messages.create = mark(new_create)
+    messages.create = mark(recorded(messages.create))
+    messages.parse = mark(recorded(messages.parse))
     messages.stream = mark(new_stream)
+    # Built on first use around create; drop any built before.
+    for cached in ("with_raw_response", "with_streaming_response"):
+        cast(dict[str, Any], vars(messages)).pop(cached, None)
