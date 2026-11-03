@@ -9,6 +9,9 @@ authors = [
 requires-python = ">=3.11"
 dependencies = ["pydantic>=2"]
 
+[project.scripts]
+fr = "flight_recorder.cli:main"
+
 [dependency-groups]
 dev = ["pytest>=8", "ruff", "pyright"]
 
