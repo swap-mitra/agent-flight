@@ -13,27 +13,28 @@ from flight_recorder.recorder import ActiveRun
 
 class ListSink:
     def __init__(self) -> None:
-        self.events: list[tuple[str, Run, Step | None]] = []
+        self.events: list[str] = []
+        self.runs: list[Run] = []  # as received at start and finish
+        self.steps: list[Step] = []
 
     def run_started(self, run: Run) -> None:
-        self.events.append(("start", run.model_copy(deep=True), None))
+        self.events.append("start")
+        self.runs.append(run)
 
-    def step_closed(self, run: Run, step: Step) -> None:
-        self.events.append(("step", run, step))
+    def step_closed(self, run_id: str, step: Step) -> None:
+        self.events.append("step")
+        self.steps.append(step)
 
     def run_finished(self, run: Run) -> None:
-        self.events.append(("finish", run.model_copy(deep=True), None))
-
-    @property
-    def steps(self) -> list[Step]:
-        return [step for _, _, step in self.events if step is not None]
+        self.events.append("finish")
+        self.runs.append(run)
 
 
 class BrokenSink:
     def run_started(self, run: Run) -> None:
         raise OSError("disk full")
 
-    def step_closed(self, run: Run, step: Step) -> None:
+    def step_closed(self, run_id: str, step: Step) -> None:
         raise OSError("disk full")
 
     def run_finished(self, run: Run) -> None:
@@ -85,9 +86,9 @@ def test_sinks_see_start_each_step_then_finish(sink: ListSink) -> None:
         tool_step()
         run.output = "done"
 
-    assert [kind for kind, _, _ in sink.events] == ["start", "step", "step", "finish"]
-    assert sink.events[0][1].status == "incomplete"
-    finished = sink.events[-1][1]
+    assert sink.events == ["start", "step", "step", "finish"]
+    assert sink.runs[0].status == "incomplete"
+    finished = sink.runs[-1]
     assert (finished.status, finished.output, finished.totals.steps) == (
         "ok",
         "done",
@@ -102,7 +103,7 @@ def test_parallel_steps_get_unique_seqs(sink: ListSink) -> None:
         for future in [pool.submit(tool_step) for _ in range(50)]:
             future.result()
     assert sorted(s.seq for s in sink.steps) == list(range(50))
-    assert sink.events[-1][1].totals.steps == 50
+    assert sink.runs[-1].totals.steps == 50
 
 
 def test_totals_sum_tokens_and_cost(sink: ListSink) -> None:
@@ -137,7 +138,7 @@ def test_failing_sink_never_reaches_the_agent_and_logs_once_per_run(
                 run.output = "result"
 
     assert len(caplog.records) == 2  # one per run, not one per failure
-    assert [kind for kind, _, _ in healthy.events].count("step") == 4
+    assert healthy.events.count("step") == 4
 
 
 def test_invalid_step_is_dropped_and_the_run_continues(

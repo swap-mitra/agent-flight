@@ -16,7 +16,7 @@ class StepSink:
     def run_started(self, run: Run) -> None:
         pass
 
-    def step_closed(self, run: Run, step: Step) -> None:
+    def step_closed(self, run_id: str, step: Step) -> None:
         self.steps.append(step)
 
     def run_finished(self, run: Run) -> None:

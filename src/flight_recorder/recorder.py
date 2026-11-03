@@ -12,21 +12,27 @@ import time
 from collections.abc import Callable
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
-from typing import Any, Literal, Protocol
+from typing import Any, Literal, Protocol, TypeVar
 
-from pydantic import JsonValue
+from pydantic import BaseModel, JsonValue
 from pydantic_core import to_jsonable_python
 
+from flight_recorder import redact
 from flight_recorder.model import ErrorInfo, ModelCall, Run, Step, ToolCall
 
 logger = logging.getLogger("flight_recorder")
 
+M = TypeVar("M", bound=BaseModel)
+
 
 class Sink(Protocol):
-    """Receives a run as it is recorded: the cassette store and the OTel exporter."""
+    """Receives a run as it is recorded: the cassette store and the OTel exporter.
+
+    Every record a sink receives is a redacted copy.
+    """
 
     def run_started(self, run: Run) -> None: ...
-    def step_closed(self, run: Run, step: Step) -> None: ...
+    def step_closed(self, run_id: str, step: Step) -> None: ...
     def run_finished(self, run: Run) -> None: ...
 
 
@@ -77,12 +83,14 @@ class ActiveRun:
     _error_logged: bool = False
 
     def start(self) -> None:
-        self._emit(lambda sink: sink.run_started(self.run))
+        if (run := self._redacted(self.run)) is not None:
+            self._emit(lambda sink: sink.run_started(run))
 
     def finish(self, failed: bool) -> None:
         self.run.status = "error" if failed else "ok"
         self.run.output = jsonable(self.run.output)
-        self._emit(lambda sink: sink.run_finished(self.run))
+        if (run := self._redacted(self.run)) is not None:
+            self._emit(lambda sink: sink.run_finished(run))
 
     def open_step(self, kind: Literal["model", "tool"]) -> PendingStep:
         with self._lock:
@@ -119,7 +127,9 @@ class ActiveRun:
         except Exception as exc:  # noqa: BLE001  recording fails open (FR-R9)
             self._log_failure(exc)
             return
-        self._emit(lambda sink: sink.step_closed(self.run, step))
+        if (redacted := self._redacted(step)) is not None:
+            run_id = self.run.run_id
+            self._emit(lambda sink: sink.step_closed(run_id, redacted))
 
     def _add_to_totals(self, step: Step) -> None:
         with self._lock:
@@ -135,6 +145,16 @@ class ActiveRun:
                 totals.cost_usd += step.model.cost_usd
             else:
                 totals.cost_usd = None
+
+    def _redacted(self, record: M) -> M | None:
+        """A redacted copy, or None (logged) when it cannot be redacted safely."""
+        try:
+            return type(record).model_validate(
+                redact.apply(record.model_dump(mode="json"))
+            )
+        except Exception as exc:  # noqa: BLE001  never write what was not redacted
+            self._log_failure(exc)
+            return None
 
     def _emit(self, call: Callable[[Sink], None]) -> None:
         for sink in sinks:
