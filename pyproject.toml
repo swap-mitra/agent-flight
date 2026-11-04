@@ -22,6 +22,9 @@ anthropic = [
 otel = [
     "opentelemetry-api>=1.27",
 ]
+langchain = [
+    "langchain-core>=1",
+]
 
 [dependency-groups]
 dev = [
@@ -31,6 +34,10 @@ dev = [
     "openai>=1",
     "anthropic>=0.40",
     "opentelemetry-sdk>=1.27",
+    "langchain-core>=1",
+    "langchain-openai>=1",
+    "langchain-anthropic>=1",
+    "langgraph>=1",
 ]
 
 [build-system]

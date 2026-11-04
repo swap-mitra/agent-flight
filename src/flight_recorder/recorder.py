@@ -40,6 +40,10 @@ class Sink(Protocol):
 # Set by fr.configure() once the store and exporter exist (rows 1.7, 1.13).
 sinks: list[Sink] = []
 
+# Called as each step opens, in the caller's context, for that step's tags;
+# framework adapters add theirs (the LangChain adapter: the LangGraph node).
+tag_sources: list[Callable[[], list[str]]] = []
+
 
 def jsonable(value: Any) -> JsonValue:
     """Convert any value to JSON data without raising; unknown types become repr()."""
@@ -87,6 +91,7 @@ class PendingStep:
     started_at: datetime  # wall clock, for placing the step in time
     parent_seq: int | None
     token: Token[tuple[str, int] | None] | None
+    tags: list[str] = field(default_factory=list[str])
 
 
 @dataclass
@@ -122,9 +127,17 @@ class ActiveRun:
             self._next_seq += 1
         outer = _open_step.get()
         parent_seq = outer[1] if outer and outer[0] == self.run.run_id else None
+        tags: list[str] = []
+        try:
+            for source in tag_sources:
+                tags += source()
+        except Exception as exc:  # noqa: BLE001  recording fails open (FR-R9)
+            self.log_failure(exc)
         token = _open_step.set((self.run.run_id, seq))
         started = time.perf_counter_ns()
-        return PendingStep(seq, kind, started / 1e9, now(started), parent_seq, token)
+        return PendingStep(
+            seq, kind, started / 1e9, now(started), parent_seq, token, tags
+        )
 
     def release(self, pending: PendingStep) -> None:
         """Stop treating ``pending`` as the open step while it stays pending.
@@ -158,6 +171,7 @@ class ActiveRun:
                 seq=pending.seq,
                 kind=pending.kind,
                 parent_seq=pending.parent_seq,
+                tags=pending.tags,
                 started_at=pending.started_at,
                 latency_ms=(time.perf_counter() - pending.started) * 1000,
                 status=status,

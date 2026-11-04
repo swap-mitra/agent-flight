@@ -18,6 +18,8 @@ import anthropic
 import httpx2
 import openai
 import pytest
+from langchain_core.tools import tool as lc_tool
+from langchain_openai import ChatOpenAI
 from test_anthropic import ASK
 from test_anthropic import Server as AnthropicServer
 from test_openai import Server as OpenAIServer
@@ -147,7 +149,29 @@ def anthropic_async_stream() -> Any:
     return asyncio.run(agent())
 
 
-TOOL_PATHS = [tool_sync, tool_async, tool_error]
+@lc_tool
+def lc_lookup(order_id: str) -> str:
+    """Look an order up."""
+    return f"{order_id} shipped"
+
+
+def langchain_tool() -> Any:
+    (wrapped,) = fr.langchain.wrap_tools([lc_lookup], effects={"lc_lookup": "read"})
+    with fr.run("faults"):
+        args = {"order_id": "o1"}
+        tool_call = {"name": "lc_lookup", "args": args, "id": "c1", "type": "tool_call"}
+        return wrapped.invoke(tool_call)
+
+
+def langchain_model() -> Any:
+    http = httpx2.Client(transport=httpx2.MockTransport(OpenAIServer()))
+    model = ChatOpenAI(model="gpt-x", api_key="sk-test", http_client=http)  # type: ignore[arg-type]
+    fr.langchain.wrap_model(model)
+    with fr.run("faults"):
+        return model.invoke("hi").model_dump(exclude={"id"})  # id is per call
+
+
+TOOL_PATHS = [tool_sync, tool_async, tool_error, langchain_tool]
 MODEL_PATHS = [
     openai_create,
     openai_stream,
@@ -157,6 +181,7 @@ MODEL_PATHS = [
     anthropic_stream,
     anthropic_beta,
     anthropic_async_stream,
+    langchain_model,
 ]
 
 

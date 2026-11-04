@@ -10,6 +10,7 @@ from flight_recorder.policy import pricing
 def _isolate_global_config(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     # No test writes to the default .fr store, and configure() calls are undone.
     monkeypatch.setattr(recorder, "sinks", [])
+    monkeypatch.setattr(recorder, "tag_sources", [])
     monkeypatch.setattr(redact, "rules", list(redact.DEFAULT_RULES))
     monkeypatch.setattr(pricing, "table", pricing.SHIPPED)
     yield
