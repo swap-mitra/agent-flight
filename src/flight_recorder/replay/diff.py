@@ -59,6 +59,8 @@ class RunDiff:
     cost_delta_usd: float | None
     latency_delta_ms: float
     children: list["RunDiff"] = field(default_factory=list["RunDiff"])
+    baseline_cost_usd: float | None = None
+    candidate_cost_usd: float | None = None
 
     def to_json(self) -> dict[str, JsonValue]:
         return {
@@ -68,6 +70,8 @@ class RunDiff:
             "changes": [str(c) for c in self.changes],
             "output_equal": self.output_equal,
             "cost_delta_usd": self.cost_delta_usd,
+            "baseline_cost_usd": self.baseline_cost_usd,
+            "candidate_cost_usd": self.candidate_cost_usd,
             "latency_delta_ms": round(self.latency_delta_ms, 3),
             "children": [c.to_json() for c in self.children],
         }
@@ -80,6 +84,7 @@ def diff(
     *,
     divergences: Sequence[object] = (),
     children: Sequence[tuple[Recording | None, Recording | None]] = (),
+    models_may_differ: bool = False,
 ) -> RunDiff:
     """The diff and verdict of ``candidate`` against ``baseline``.
 
@@ -87,6 +92,9 @@ def diff(
     an aligned step whose status changed, or outputs the comparator rejects.
     changed: steps added, removed or changed (tool arguments, model used),
     with everything above passing. same: nothing differs.
+
+    ``models_may_differ`` ignores a change of the model used, for judging a
+    routing policy that is meant to change it.
     """
     (base_run, base_steps), (cand_run, cand_steps) = baseline, candidate
     reasons = [f"diverged: {d}" for d in divergences]
@@ -96,7 +104,7 @@ def diff(
     for op, i1, i2, j1, j2 in matcher.get_opcodes():
         if op == "equal":
             for b, c in zip(base_steps[i1:i2], cand_steps[j1:j2], strict=True):
-                fields = _changed_fields(b, c)
+                fields = _changed_fields(b, c, models_may_differ)
                 if fields:
                     changes.append(Change("changed", _label(b), b.seq, c.seq, fields))
                 if "status" in fields:
@@ -113,7 +121,7 @@ def diff(
     output_equal = compare(base_run.output, cand_run.output)
     if not output_equal:
         reasons.append("final output differs")
-    child_diffs = [_child(b, c, compare) for b, c in children]
+    child_diffs = [_child(b, c, compare, models_may_differ) for b, c in children]
     reasons += [f"child {c.name}: failed" for c in child_diffs if c.verdict == "failed"]
     verdict: Verdict = "failed" if reasons else "same"
     if verdict == "same" and (changes or any(c.verdict != "same" for c in child_diffs)):
@@ -133,10 +141,17 @@ def diff(
         latency_delta_ms=sum(s.latency_ms for s in cand_steps)
         - sum(s.latency_ms for s in base_steps),
         children=child_diffs,
+        baseline_cost_usd=base_cost,
+        candidate_cost_usd=cand_cost,
     )
 
 
-def _child(base: Recording | None, cand: Recording | None, compare: Compare) -> RunDiff:
+def _child(
+    base: Recording | None,
+    cand: Recording | None,
+    compare: Compare,
+    models_may_differ: bool,
+) -> RunDiff:
     if base is None or cand is None:
         present = base or cand
         assert present is not None
@@ -152,7 +167,7 @@ def _child(base: Recording | None, cand: Recording | None, compare: Compare) -> 
             None,
             0.0,
         )
-    return diff(base, cand, compare)
+    return diff(base, cand, compare, models_may_differ=models_may_differ)
 
 
 def _signature(step: Step) -> tuple[str, str]:
@@ -166,7 +181,7 @@ def _label(step: Step) -> str:
     return " ".join(_signature(step))
 
 
-def _changed_fields(b: Step, c: Step) -> list[str]:
+def _changed_fields(b: Step, c: Step, models_may_differ: bool) -> list[str]:
     fields: list[str] = []
     if b.status != c.status:
         fields.append("status")
@@ -176,7 +191,8 @@ def _changed_fields(b: Step, c: Step) -> list[str]:
         if (b.tool.error and b.tool.error.type) != (c.tool.error and c.tool.error.type):
             fields.append("error")
     if (
-        b.model is not None
+        not models_may_differ
+        and b.model is not None
         and c.model is not None
         and b.model.model_used != c.model.model_used
     ):

@@ -5,12 +5,14 @@ import json
 import os
 import re
 import sqlite3
+import subprocess
 import sys
+import tempfile
 from collections.abc import Sequence
 from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import get_args
+from typing import Any, get_args
 
 from flight_recorder.errors import CassetteError
 from flight_recorder.model import Run, Step
@@ -46,6 +48,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         "accept", help="make a test case's latest replay its baseline"
     )
     accept.add_argument("case", help="the case name, as in cassettes/<case>.jsonl")
+    route = commands.add_parser(
+        "eval-route",
+        help="replay the pytest suite under a candidate routing policy",
+        description="Replay recorded test cases under a candidate policy, with"
+        " models called live (tool results from the recordings), and report"
+        " the same-verdict rate and cost delta for each run name. Arguments"
+        " after -- go to pytest.",
+    )
+    route.add_argument("--policy", required=True, type=Path, help="the policy file")
+    route.add_argument(
+        "--report", type=Path, help="also write eval-route.md and .json here"
+    )
+    route.add_argument("pytest_args", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
 
     root = Path(os.environ.get("FR_DIR") or ".fr")
@@ -58,6 +73,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _diff(root, args.baseline, args.candidate)
         if args.command == "accept":
             return _accept(root, args.case)
+        if args.command == "eval-route":
+            return _eval_route(args.policy, args.report, args.pytest_args)
         return _show(root, args.run)
     except _Fail as exc:
         print(f"fr: {exc}", file=sys.stderr)
@@ -181,6 +198,98 @@ def _accept(root: Path, case: str) -> int:
         raise _Fail(str(exc)) from None
     print(f"accepted {path}")
     return 0
+
+
+def _eval_route(policy: Path, report: Path | None, pytest_args: list[str]) -> int:
+    """Run pytest under ``policy`` and summarise its replay report (FR-B7).
+
+    Exit 1 if any case failed, as pytest does.
+    """
+    if not policy.is_file():
+        raise _Fail(f"no policy file at {policy}")
+    if pytest_args[:1] == ["--"]:
+        pytest_args = pytest_args[1:]
+    with tempfile.TemporaryDirectory() as tmp:
+        command = [
+            sys.executable,
+            "-m",
+            "pytest",
+            "--fr-mode=replay",
+            f"--fr-policy={policy.resolve()}",
+            f"--fr-report={tmp}",
+            *pytest_args,
+        ]
+        code = subprocess.run(command, check=False).returncode
+        produced = Path(tmp) / "report.json"
+        if not produced.is_file():
+            raise _Fail(f"pytest exited {code} without a replay report")
+        results: list[dict[str, Any]] = json.loads(produced.read_text("utf-8"))
+    rows = _route_rows(results)
+    text = _route_markdown(policy.name, rows)
+    print(text, end="")
+    if report is not None:
+        report.mkdir(parents=True, exist_ok=True)
+        (report / "eval-route.md").write_text(text, encoding="utf-8")
+        data = json.dumps({"policy": policy.name, "runs": rows}, indent=2)
+        (report / "eval-route.json").write_text(data, encoding="utf-8")
+    return 1 if any(r["verdict"] == "failed" for r in results) else 0
+
+
+def _route_rows(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Per run name: runs, how many judged same, and costs (None if any is unknown)."""
+    rows: dict[str, dict[str, Any]] = {}
+    for result in results:
+        for d in result["diffs"]:
+            row = rows.setdefault(
+                d["name"],
+                {
+                    "run": d["name"],
+                    "runs": 0,
+                    "same": 0,
+                    "baseline_usd": 0.0,
+                    "candidate_usd": 0.0,
+                },
+            )
+            row["runs"] += 1
+            row["same"] += d["verdict"] == "same"
+            for key, cost in (
+                ("baseline_usd", d["baseline_cost_usd"]),
+                ("candidate_usd", d["candidate_cost_usd"]),
+            ):
+                row[key] = None if row[key] is None or cost is None else row[key] + cost
+    for row in rows.values():
+        row["same_rate"] = row["same"] / row["runs"]
+        base, cand = row["baseline_usd"], row["candidate_usd"]
+        row["delta_usd"] = None if base is None or cand is None else cand - base
+    return list(rows.values())
+
+
+def _route_markdown(policy: str, rows: list[dict[str, Any]]) -> str:
+    runs = sum(r["runs"] for r in rows)
+    lines = [
+        "## Flight Recorder route evaluation",
+        "",
+        (
+            f"Policy `{policy}` replayed against {runs} recorded"
+            f" run{'s' if runs != 1 else ''}: tool results came from the"
+            " recordings, model calls ran live under the policy."
+        ),
+        "",
+        "| Run | Same verdict | Baseline cost | Candidate cost | Cost delta |",
+        "| --- | --- | --- | --- | --- |",
+    ]
+    for r in rows:
+        delta = r["delta_usd"]
+        change = "-"
+        if delta is not None:
+            change = f"{'-' if delta < 0 else '+'}${abs(delta):.4f}"
+            if r["baseline_usd"]:
+                change += f" ({delta / r['baseline_usd']:+.1%})"
+        lines.append(
+            f"| `{r['run']}` | {r['same_rate']:.0%} ({r['same']}/{r['runs']})"
+            f" | {_cost(r['baseline_usd'])} | {_cost(r['candidate_usd'])} | {change} |"
+        )
+    return "\n".join(lines) + "\n"
 
 
 def _resolve(root: Path, ref: str) -> Path:

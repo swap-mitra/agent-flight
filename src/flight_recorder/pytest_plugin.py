@@ -25,8 +25,9 @@ import pytest
 
 import flight_recorder as fr
 from flight_recorder import recorder
-from flight_recorder.errors import CassetteError, ReplayDivergence
+from flight_recorder.errors import CassetteError, PolicyError, ReplayDivergence
 from flight_recorder.model import Run
+from flight_recorder.policy import loader
 from flight_recorder.replay import cases
 from flight_recorder.replay.diff import COMPARATORS, Compare, RunDiff, diff
 from flight_recorder.replay.engine import Session, replaying
@@ -68,6 +69,13 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     group.addoption(
         "--fr-report", metavar="DIR", help="write report.json and report.md to DIR"
     )
+    group.addoption(
+        "--fr-policy",
+        metavar="FILE",
+        help="replay under this policy instead of the configured one, with models"
+        " live (tools replay); a change of model alone is not a change"
+        " (fr eval-route)",
+    )
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -77,6 +85,16 @@ def pytest_configure(config: pytest.Config) -> None:
         " on_divergence='strict', lookahead=0): how fr_run records and replays",
     )
     config.stash[_RESULTS] = []
+    if (path := config.getoption("fr_policy", None)) is not None:
+        try:
+            loader.override = loader.load(path)
+        except PolicyError as exc:
+            raise pytest.UsageError(str(exc)) from exc
+
+
+def pytest_unconfigure(config: pytest.Config) -> None:
+    if config.getoption("fr_policy", None) is not None:
+        loader.override = None
 
 
 @dataclass
@@ -104,6 +122,7 @@ class _Case:
     compare: Compare
     policy: Any
     lookahead: int
+    rerouted: bool  # --fr-policy: models may change by design
     on_change: str
     update: bool
     results: list[_Result]
@@ -154,7 +173,12 @@ class _Case:
         ]
         strict = [d for d in session.divergences if d.policy == "strict"]
         result = diff(
-            baseline, candidate, self.compare, divergences=strict, children=pairs
+            baseline,
+            candidate,
+            self.compare,
+            divergences=strict,
+            children=pairs,
+            models_may_differ=self.rerouted,
         )
         if error is not None:
             listed = isinstance(error, ReplayDivergence) and error.divergence in strict
@@ -221,6 +245,11 @@ def fr_run(request: pytest.FixtureRequest) -> _Case:
             pytrace=False,
         )
     repeats = int(options.get("repeats", 1)) if mode == "replay" else 1
+    # A rerouted call has no recorded response, so --fr-policy replays tools only.
+    rerouted = config.getoption("fr_policy") is not None
+    replay = (
+        "tools" if rerouted else options.get("replay") or config.getoption("fr_replay")
+    )
     compare = options.get("compare", "json")
     if isinstance(compare, str):
         if compare not in COMPARATORS:
@@ -232,13 +261,14 @@ def fr_run(request: pytest.FixtureRequest) -> _Case:
         name=name,
         case=case,
         mode=mode,
-        replay=str(options.get("replay") or config.getoption("fr_replay")),
+        replay=str(replay),
         store=store,
         repeats=repeats,
         min_pass=int(options.get("min_pass") or repeats),
         compare=compare,
         policy=options.get("on_divergence", "strict"),
         lookahead=int(options.get("lookahead", 0)),
+        rerouted=rerouted,
         on_change=str(config.getoption("fr_on_change")),
         update=bool(config.getoption("fr_update")),
         results=config.stash[_RESULTS],
