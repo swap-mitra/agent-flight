@@ -78,8 +78,8 @@ jobs:
           fr runs | grep refund-desk
           fr show "$id"
 
-  # A v* tag publishes once every job above passes: TestPyPI, then PyPI, by
-  # trusted publishing, so no token is stored. --check-url skips files already
+  # A v* tag publishes to PyPI once every job above passes, by trusted
+  # publishing, so no token is stored. --check-url skips files already
   # uploaded, so a rerun after a partial publish goes through.
   release:
     if: startsWith(github.ref, 'refs/tags/v')
@@ -93,5 +93,4 @@ jobs:
       - uses: astral-sh/setup-uv@v10.3.3
       - run: test "$GITHUB_REF_NAME" = "v$(uv version --short)"
       - run: uv build
-      - run: uv publish --trusted-publishing always --publish-url https://test.pypi.org/legacy/ --check-url https://test.pypi.org/simple/
       - run: uv publish --trusted-publishing always --check-url https://pypi.org/simple/
