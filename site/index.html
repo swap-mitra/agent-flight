@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Flight Recorder: replay tests for AI agents</title>
+<meta name="description" content="Record every model and tool call of an AI agent run, then replay it as a regression test in CI. Open source Python library for OpenAI, Anthropic, LangChain and LangGraph.">
+<meta property="og:title" content="Flight Recorder">
+<meta property="og:description" content="Record every agent run. Replay it as a regression test.">
+<meta property="og:image" content="https://swap-mitra.github.io/ai-flight-recorder/poster.png">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;900&family=Martian+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+:root {
+  --ink: #111317; --panel: #1b1e24; --line: #2c313a; --paper: #eceae4; --dim: #9aa0aa;
+  --orange: #ff6a13; --green: #3ecf8e; --red: #ff5a5a;
+}
+* { box-sizing: border-box; margin: 0; }
+body { background: var(--ink); color: var(--paper); font: 500 17px/1.6 Archivo, system-ui, sans-serif; }
+a { color: inherit; }
+code, pre, .mono { font-family: "Martian Mono", ui-monospace, monospace; }
+.wrap { max-width: 1080px; margin: 0 auto; padding: 0 24px; }
+header { display: flex; justify-content: space-between; align-items: center; padding: 22px 0; }
+.brand { display: flex; align-items: center; gap: 10px; font-weight: 900; text-decoration: none; }
+.mark { width: 26px; height: 26px; border-radius: 6px; background: var(--orange); position: relative; }
+.mark::after { content: ""; position: absolute; inset: 7px 6px; border-top: 2px solid #1a0a00; border-bottom: 2px solid #1a0a00; }
+nav a { color: var(--dim); text-decoration: none; margin-left: 22px; font-size: 15px; }
+nav a:hover { color: var(--paper); }
+.hero { padding: 56px 0 40px; display: grid; gap: 40px; grid-template-columns: 1fr; }
+.kicker { color: var(--orange); font: 600 13px/1 "Martian Mono", monospace; letter-spacing: 2px; text-transform: uppercase; }
+h1 { font: 900 clamp(38px, 6vw, 64px)/1.02 Archivo, sans-serif; letter-spacing: -1.5px; margin: 14px 0 18px; max-width: 14ch; }
+.lede { color: var(--dim); font-size: 20px; max-width: 46ch; }
+.cta { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 28px; align-items: center; }
+.install { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 16px; font-size: 15px; }
+.install span { color: var(--orange); }
+.button { background: var(--orange); color: #1a0a00; text-decoration: none; font-weight: 900; padding: 12px 18px; border-radius: 8px; }
+.demo img { width: 100%; border-radius: 12px; border: 1px solid var(--line); display: block; }
+section { padding: 56px 0; border-top: 1px solid var(--line); }
+h2 { font: 900 clamp(28px, 4vw, 40px)/1.1 Archivo, sans-serif; letter-spacing: -0.5px; margin-bottom: 14px; }
+.sub { color: var(--dim); max-width: 60ch; margin-bottom: 28px; }
+.steps { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+.step { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 20px; }
+.step b { display: block; font-size: 19px; margin: 6px 0; }
+.step .n { color: var(--orange); font: 600 13px "Martian Mono", monospace; }
+.step p { color: var(--dim); font-size: 15px; }
+pre { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 18px 20px; overflow-x: auto; font-size: 14px; line-height: 1.7; }
+.c { color: var(--dim); } .k { color: var(--orange); } .s { color: var(--green); }
+.verdicts { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); margin-top: 24px; }
+.verdict { border-radius: 10px; padding: 16px 18px; border: 1px solid var(--line); }
+.verdict b { font-family: "Martian Mono", monospace; }
+.verdict.failed b { color: var(--red); } .verdict.changed b { color: var(--orange); } .verdict.same b { color: var(--green); }
+.verdict p { color: var(--dim); font-size: 15px; margin-top: 6px; }
+.grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+.feature h3 { font-size: 18px; margin-bottom: 6px; }
+.feature p { color: var(--dim); font-size: 15px; }
+footer { border-top: 1px solid var(--line); padding: 32px 0 48px; color: var(--dim); font-size: 15px; display: flex; flex-wrap: wrap; gap: 18px; justify-content: space-between; }
+@media (min-width: 900px) { .hero { grid-template-columns: 1fr 1.15fr; align-items: center; } }
+@media (max-width: 560px) { nav a:not(:last-child) { display: none; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <a class="brand" href="#"><span class="mark"></span>Flight Recorder</a>
+    <nav>
+      <a href="#how">How it works</a>
+      <a href="#replay">Replay</a>
+      <a href="https://github.com/swap-mitra/ai-flight-recorder">GitHub</a>
+    </nav>
+  </header>
+
+  <div class="hero">
+    <div>
+      <div class="kicker">Open source · Python</div>
+      <h1>Regression tests for AI agents.</h1>
+      <p class="lede">Record every model and tool call of an agent run. Replay it against your changed agent in CI, and get one verdict: same, changed or failed.</p>
+      <div class="cta">
+        <code class="install"><span>$</span> pip install ai-flight-recorder</code>
+        <a class="button" href="https://github.com/swap-mitra/ai-flight-recorder#quick-start">Quick start</a>
+      </div>
+    </div>
+    <div class="demo"><img src="demo.gif" alt="A recorded agent run replayed in CI: a changed prompt fails the replay and the verdict is posted on the pull request" width="960" height="540"></div>
+  </div>
+
+  <section id="how">
+    <h2>A one-line prompt change can change everything.</h2>
+    <p class="sub">An agent is a loop of model calls and tool calls. Change the prompt, the model or the code, and it can take another path: other tools, other arguments, a refund that should not happen. Flight Recorder makes that path something you can test.</p>
+    <div class="steps">
+      <div class="step"><span class="n">01</span><b>Record</b><p>Wrap your model client and tools. Every call is written to a readable JSONL cassette, with tokens, cost and latency.</p></div>
+      <div class="step"><span class="n">02</span><b>Replay</b><p>Run your changed agent against the recording. Tool results come from the cassette, so nothing real is touched.</p></div>
+      <div class="step"><span class="n">03</span><b>Judge</b><p>Each case gets a verdict and a diff. The report lands on your pull request.</p></div>
+    </div>
+  </section>
+
+  <section id="replay">
+    <h2>Three lines to a replayed test.</h2>
+    <p class="sub">The pytest plugin loads when the package is installed. Record once, commit the cassette, and CI replays it on every push.</p>
+<pre><span class="k">import</span> flight_recorder <span class="k">as</span> fr
+
+client = fr.wrap(OpenAI())            <span class="c"># or Anthropic, or a LangChain model</span>
+
+<span class="k">@fr.tool</span>(effect=<span class="s">"irreversible"</span>)
+<span class="k">def</span> issue_refund(order_id: str, amount: float) -> str: ...
+
+<span class="k">@pytest.mark.fr</span>(cassette=<span class="s">"triage/refund_over_limit"</span>)
+<span class="k">def</span> test_refund_over_limit(fr_run):
+    fr_run.output = triage_agent(TICKET)
+
+<span class="c">$ pytest --fr-mode=record    # once, live</span>
+<span class="c">$ pytest                     # replayed in CI</span></pre>
+    <div class="verdicts">
+      <div class="verdict failed"><b>failed</b><p>A call with no recorded match, an exception, a status change or a different final output.</p></div>
+      <div class="verdict changed"><b>changed</b><p>Tools added, removed or called differently, with the same final output. Accept it with one command.</p></div>
+      <div class="verdict same"><b>same</b><p>Nothing differs.</p></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Built to stay out of your way.</h2>
+    <div class="grid">
+      <div class="feature"><h3>Invisible interception</h3><p>Your agent gets exactly what the real call returned or raised. Under 2 ms per call, checked in CI.</p></div>
+      <div class="feature"><h3>Two replay modes</h3><p>Serve tool results and keep models live to test prompts, or serve model responses too for free, offline, deterministic runs.</p></div>
+      <div class="feature"><h3>Safe by default</h3><p>Secrets redacted before anything is written. Replay refuses to call an irreversible tool for real.</p></div>
+      <div class="feature"><h3>Cost you can trust</h3><p>Every call priced from a shipped table, cache and tool fees included. Unknown models record null, never a guess.</p></div>
+      <div class="feature"><h3>Works with your stack</h3><p>OpenAI, Anthropic, LangChain and LangGraph, or any Python function as a tool.</p></div>
+      <div class="feature"><h3>Your data stays yours</h3><p>Plain files in your repo. Optional OpenTelemetry export to the backend you already run. No telemetry.</p></div>
+    </div>
+  </section>
+
+  <footer>
+    <span>Flight Recorder · Apache-2.0</span>
+    <span><a href="https://github.com/swap-mitra/ai-flight-recorder">GitHub</a> · <a href="https://pypi.org/project/ai-flight-recorder/">PyPI</a></span>
+  </footer>
+</div>
+</body>
+</html>
