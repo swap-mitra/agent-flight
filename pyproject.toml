@@ -56,6 +56,8 @@ extend-select = ["I", "UP", "B"]
 typeCheckingMode = "strict"
 # dogfood/ is its own project with its own environment, checked by its own job.
 exclude = ["dogfood", "**/.venv", "**/__pycache__"]
+# The benchmark reuses the SDK contract tests' mock servers.
+extraPaths = ["tests"]
 pythonVersion = "3.11"
 
 [tool.pytest.ini_options]

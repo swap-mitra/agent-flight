@@ -23,6 +23,17 @@ jobs:
       - run: uv run pyright
       - run: uv run pytest
 
+  # FR-R8: median interception overhead under 2 ms per call, on every path.
+  benchmark:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.3.3
+        with:
+          python-version: "3.12"
+      - run: uv sync --locked
+      - run: uv run python benchmarks/overhead.py
+
   # The reference agent over Heptapod's tools (plan row 1.14). Heptapod needs
   # Python 3.12+ and its mock backends, which only a checkout has.
   dogfood:
