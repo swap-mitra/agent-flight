@@ -291,5 +291,7 @@ def test_configure_otel_without_the_extra_says_how_to_install_it(
 ) -> None:
     monkeypatch.setitem(sys.modules, "opentelemetry", None)
     monkeypatch.delitem(sys.modules, "flight_recorder.export.otel")
-    with pytest.raises(ModuleNotFoundError, match=r"\[otel\]"):
+    with pytest.raises(
+        ModuleNotFoundError, match=r"pip install 'flight-recorder-ai\[otel\]'"
+    ):
         fr.configure(dir=tmp_path, otel=True)

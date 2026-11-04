@@ -38,7 +38,7 @@ def configure(
         except ModuleNotFoundError as exc:
             raise ModuleNotFoundError(
                 "fr.configure(otel=True) needs the otel extra:"
-                " pip install 'flight-recorder[otel]'",
+                " pip install 'flight-recorder-ai[otel]'",
                 name=exc.name,
             ) from exc
         sinks.append(OtelSink())
