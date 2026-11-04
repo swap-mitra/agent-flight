@@ -7,3 +7,8 @@ dist/
 docs/
 # Agent instructions are local only, like docs/.
 CLAUDE.md
+# Recordings: commit test baselines (.fr/cassettes, .fr/blobs), not the rest.
+**/.fr/runs/
+**/.fr/replays/
+**/.fr/index.sqlite*
+reports/

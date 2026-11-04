@@ -39,6 +39,9 @@ jobs:
   # Python 3.12+ and its mock backends, which only a checkout has.
   dogfood:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write  # the replay report comment
     defaults:
       run:
         working-directory: dogfood
@@ -54,9 +57,27 @@ jobs:
           python-version: "3.12"
       - run: uv sync --locked
       - run: uv run pyright
-      - run: uv run pytest
+      - run: uv run pytest --fr-report=reports
         env:
           HEPTAPOD_DIR: ${{ github.workspace }}/heptapod
+      # Plan row 2.9: the replayed regression test must catch a broken prompt.
+      - name: A deliberately broken prompt fails the replay
+        run: |
+          sed -i 's/You operate business systems through tools./You operate systems./' reference_agent.py
+          if uv run pytest tests/test_replay_suite.py -p no:cacheprovider; then
+            echo "::error::the broken prompt was not caught"
+            exit 1
+          fi
+          git checkout -- reference_agent.py
+        env:
+          HEPTAPOD_DIR: ${{ github.workspace }}/heptapod
+      - name: Post the replay report on the pull request
+        if: always() && github.event_name == 'pull_request' && hashFiles('dogfood/reports/report.md') != ''
+        # A fork's token can't comment; the report is still in the job log.
+        continue-on-error: true
+        run: gh pr comment "${{ github.event.pull_request.number }}" --body-file reports/report.md --edit-last --create-if-none
+        env:
+          GH_TOKEN: ${{ github.token }}
 
   # Release exit criterion: the README quickstart works as written, from a
   # clean install of the built wheel. Its first python block is agent.py.

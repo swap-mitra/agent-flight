@@ -24,6 +24,12 @@ import pytest
 import uvicorn
 from langchain_anthropic import ChatAnthropic
 
+import flight_recorder as fr
+
+# The replay suite's baselines live with this project, wherever pytest runs from.
+if not os.environ.get("FR_DIR"):
+    fr.configure(dir=Path(__file__).parents[1] / ".fr")
+
 HEPTAPOD_DIR = os.environ.get("HEPTAPOD_DIR")
 if not HEPTAPOD_DIR or not (Path(HEPTAPOD_DIR) / "core" / "registry.py").is_file():
     raise pytest.UsageError(
