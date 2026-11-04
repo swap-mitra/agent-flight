@@ -15,6 +15,7 @@ def configure(
     dir: str | os.PathLike[str] | None = None,
     redact: Sequence[_redact.Rule] = (),
     pricing: str | os.PathLike[str] | None = None,
+    otel: bool = False,
 ) -> None:
     """Configure recording. Each call replaces the previous configuration.
 
@@ -24,13 +25,29 @@ def configure(
     fr.redact.path, or any function from record to record).
     pricing: a TOML file in the format of the shipped pricing.toml; each of its
     entries replaces the shipped one. Raises PricingError if it is invalid.
+    otel: also export each run to the application's OpenTelemetry
+    TracerProvider; needs the ``otel`` extra. Message content is exported only
+    when OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT is SPAN_ONLY or
+    SPAN_AND_EVENT, and always after redaction.
     """
     table = _pricing.load(pricing)  # first, so an invalid file changes nothing
+    sinks: list[recorder.Sink] = []
+    if otel:
+        try:
+            from flight_recorder.export.otel import OtelSink
+        except ModuleNotFoundError as exc:
+            raise ModuleNotFoundError(
+                "fr.configure(otel=True) needs the otel extra:"
+                " pip install 'flight-recorder[otel]'",
+                name=exc.name,
+            ) from exc
+        sinks.append(OtelSink())
     root = Path(dir) if dir is not None else Path(os.environ.get("FR_DIR") or ".fr")
     for sink in recorder.sinks:
-        if isinstance(sink, CassetteStore):
-            sink.close()
-    recorder.sinks = [CassetteStore(root)]
+        close = getattr(sink, "close", None)
+        if close is not None:
+            close()
+    recorder.sinks = [CassetteStore(root), *sinks]
     _redact.rules = [*_redact.DEFAULT_RULES, *redact]
     _pricing.table = table
 

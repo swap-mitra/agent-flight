@@ -19,6 +19,9 @@ openai = [
 anthropic = [
     "anthropic>=0.40",
 ]
+otel = [
+    "opentelemetry-api>=1.27",
+]
 
 [dependency-groups]
 dev = [
@@ -27,6 +30,7 @@ dev = [
     "pyright",
     "openai>=1",
     "anthropic>=0.40",
+    "opentelemetry-sdk>=1.27",
 ]
 
 [build-system]

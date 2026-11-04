@@ -24,6 +24,7 @@ from test_openai import Server as OpenAIServer
 
 import flight_recorder as fr
 from flight_recorder import recorder
+from flight_recorder.export.otel import OtelSink
 from flight_recorder.intercept import _model
 from flight_recorder.policy import pricing
 from flight_recorder.store.cassette import CassetteStore
@@ -207,6 +208,12 @@ def step_assembly_raises(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(recorder, "Step", boom)
 
 
+def otel_export_raises(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Export runs on its own thread; the cassette is still written.
+    fr.configure(dir=root, otel=True)
+    monkeypatch.setattr(OtelSink, "_export", boom)
+
+
 def response_unreadable(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # As if an SDK release changed its response shape.
     fr.configure(dir=root)
@@ -225,6 +232,7 @@ EVERY_PATH = [
     index_unwritable,
     redaction_raises,
     step_assembly_raises,
+    otel_export_raises,
 ]
 MODEL_ONLY = [response_unreadable, pricing_raises]
 
@@ -245,14 +253,14 @@ CASES = [
 def _close_stores() -> Iterator[None]:
     yield
     for sink in recorder.sinks:
-        if isinstance(sink, CassetteStore):
+        if isinstance(sink, CassetteStore | OtelSink):
             sink.close()
 
 
 def flushed() -> None:
     for sink in recorder.sinks:
-        if isinstance(sink, CassetteStore):
-            assert sink.flush(timeout=10), "the writer thread died or hung"
+        if isinstance(sink, CassetteStore | OtelSink):
+            assert sink.flush(timeout=10), "a writer thread died or hung"
 
 
 def failures(caplog: pytest.LogCaptureFixture) -> list[str]:
