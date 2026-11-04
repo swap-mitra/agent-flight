@@ -92,6 +92,7 @@ class PendingStep:
     parent_seq: int | None
     token: Token[tuple[str, int] | None] | None
     tags: list[str] = field(default_factory=list[str])
+    source: Literal["live", "replayed", "stubbed"] = "live"
 
 
 @dataclass
@@ -172,6 +173,7 @@ class ActiveRun:
                 kind=pending.kind,
                 parent_seq=pending.parent_seq,
                 tags=pending.tags,
+                source=pending.source,
                 started_at=pending.started_at,
                 latency_ms=(time.perf_counter() - pending.started) * 1000,
                 status=status,

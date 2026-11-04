@@ -19,6 +19,7 @@ from pydantic import BaseModel
 
 from flight_recorder.intercept._model import Read, Request, acall, call, mark, wrapped
 from flight_recorder.model import Usage
+from flight_recorder.replay import http
 
 
 # ponytail: the raw response class and the two format converters are SDK
@@ -149,6 +150,8 @@ def _tier(response: Any) -> str | None:
 
 def wrap(client: OpenAI | AsyncOpenAI) -> None:
     """Record every model call this client makes inside ``fr.run()``."""
+    sdk: Any = client
+    http.install(sdk._client)  # serves fully-recorded replay
     resources: list[tuple[type[Request], Any]] = [
         (_Chat, client.chat.completions),
         (_Responses, client.responses),

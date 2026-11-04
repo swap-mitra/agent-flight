@@ -7,12 +7,15 @@ responses read, then routes each SDK call through ``call`` or ``acall``.
 import inspect
 import threading
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping
+from contextvars import Token
 from typing import Any, NamedTuple
 
 from flight_recorder.context import active_run
+from flight_recorder.errors import ReplayDivergence
 from flight_recorder.model import ModelCall, Usage
 from flight_recorder.policy import pricing
 from flight_recorder.recorder import ActiveRun, PendingStep, error_info, jsonable
+from flight_recorder.replay import engine
 
 # SDK transport options, not model parameters.
 TRANSPORT = ("extra_headers", "extra_query", "timeout")
@@ -172,11 +175,15 @@ def call(
         return send(kwargs)
     request = request_type(kwargs)
     pending = active.open_step("model")
+    token = _serve(active, pending, request)
     try:
         result = send(request.kwargs)
     except BaseException as exc:
         _close(active, pending, request, error=exc)
         raise
+    finally:
+        if token is not None:
+            engine.served_response.reset(token)
     _record(active, pending, request, result, stream_type, _sync_stream)
     return result
 
@@ -193,13 +200,38 @@ async def acall(
         return await send(kwargs)
     request = request_type(kwargs)
     pending = active.open_step("model")
+    token = _serve(active, pending, request)
     try:
         result = await send(request.kwargs)
     except BaseException as exc:
         _close(active, pending, request, error=exc)
         raise
+    finally:
+        if token is not None:
+            engine.served_response.reset(token)
     _record(active, pending, request, result, stream_type, _async_stream)
     return result
+
+
+def _serve(
+    active: ActiveRun, pending: PendingStep, request: Request
+) -> Token[Any] | None:
+    """In fully-recorded replay, have the HTTP shim answer this call with its
+    recorded response; the token resets that once the call is sent."""
+    if not engine.replaying_now():
+        return None
+    try:
+        served = engine.serve_model(active, request.call())
+    except ReplayDivergence as exc:
+        _close(active, pending, request, error=exc)
+        raise
+    if served is None or served.source != "replayed":
+        return None
+    pending.source = "replayed"
+    if served.error is not None:
+        _close(active, pending, request, error=served.error)
+        raise served.error
+    return engine.served_response.set(served.response)
 
 
 def _record(

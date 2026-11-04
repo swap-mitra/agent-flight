@@ -18,6 +18,7 @@ from flight_recorder.context import active_run
 from flight_recorder.intercept import wrap
 from flight_recorder.model import Effect, ToolCall
 from flight_recorder.recorder import ActiveRun, PendingStep, error_info, jsonable
+from flight_recorder.replay import engine
 
 M = TypeVar("M")
 T = TypeVar("T")
@@ -83,6 +84,7 @@ def wrap_tools(
 
 def _wrap_tool(tool: Any, effect: Effect) -> Any:
     copy = tool.model_copy()
+    engine.register(copy.name, effect)
     # The class's own methods, so re-wrapping replaces an earlier wrap (and its
     # effect) instead of nesting inside it.
     cls: type[Any] = copy.__class__
@@ -90,6 +92,12 @@ def _wrap_tool(tool: Any, effect: Effect) -> Any:
         types.MethodType(getattr(cls, name), copy)
         for name in ("run", "arun", "_run", "_arun")
     )
+
+    def arguments(args: tuple[Any, ...], kwargs: dict[str, Any]) -> dict[str, Any]:
+        recorded = {k: jsonable(v) for k, v in kwargs.items() if k not in _INJECTED}
+        if args:  # a single-input tool passes its input positionally
+            recorded["*args"] = jsonable(list(args))
+        return recorded
 
     def close(
         active: ActiveRun,
@@ -99,9 +107,7 @@ def _wrap_tool(tool: Any, effect: Effect) -> Any:
         result: Any = None,
         exc: BaseException | None = None,
     ) -> None:
-        recorded = {k: jsonable(v) for k, v in kwargs.items() if k not in _INJECTED}
-        if args:  # a single-input tool passes its input positionally
-            recorded["*args"] = jsonable(list(args))
+        recorded = arguments(args, kwargs)
         active.close_step(
             pending,
             "ok" if exc is None else "error",
@@ -115,6 +121,30 @@ def _wrap_tool(tool: Any, effect: Effect) -> Any:
             ),
         )
 
+    def replayed(
+        active: ActiveRun, args: tuple[Any, ...], kwargs: dict[str, Any]
+    ) -> engine.Served | None:
+        if not engine.replaying_now():
+            return None
+        served = engine.serve_tool(active, copy.name, effect, arguments(args, kwargs))
+        return None if served is None or served.source == "live" else served
+
+    def replay(
+        active: ActiveRun,
+        pending: PendingStep,
+        served: engine.Served,
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+    ) -> Any:
+        # run() wraps the result in a ToolMessage with the live call id, so
+        # the model's conversation stays consistent.
+        pending.source = served.source
+        if served.error is not None:
+            close(active, pending, args, kwargs, exc=served.error)
+            raise served.error
+        close(active, pending, args, kwargs, served.result)
+        return served.result
+
     # functools.wraps keeps the signature LangChain reads to decide whether to
     # pass run_manager and config.
     @functools.wraps(sync)
@@ -122,7 +152,10 @@ def _wrap_tool(tool: Any, effect: Effect) -> Any:
         active = active_run()
         if active is None or _recording.get():
             return sync(*args, **kwargs)
+        served = replayed(active, args, kwargs)
         pending = active.open_step("tool")
+        if served is not None:
+            return replay(active, pending, served, args, kwargs)
         token = _recording.set(True)
         try:
             result = sync(*args, **kwargs)
@@ -139,7 +172,10 @@ def _wrap_tool(tool: Any, effect: Effect) -> Any:
         active = active_run()
         if active is None:
             return await async_(*args, **kwargs)
+        served = replayed(active, args, kwargs)
         pending = active.open_step("tool")
+        if served is not None:
+            return replay(active, pending, served, args, kwargs)
         token = _recording.set(True)
         try:
             result = await async_(*args, **kwargs)

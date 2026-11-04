@@ -14,6 +14,8 @@ from typing import get_args
 
 from flight_recorder.errors import CassetteError
 from flight_recorder.model import Run, Step
+from flight_recorder.replay import cases
+from flight_recorder.replay.diff import diff
 from flight_recorder.store import index
 from flight_recorder.store.cassette import load
 
@@ -37,6 +39,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     runs.add_argument("--limit", type=int, default=20, help="0 for all (default 20)")
     show = commands.add_parser("show", help="print a run step by step")
     show.add_argument("run", help="run id, unique id prefix, or cassette path")
+    compare = commands.add_parser("diff", help="diff a run against a baseline")
+    compare.add_argument("baseline", help="run id, unique id prefix, or cassette path")
+    compare.add_argument("candidate", help="run id, unique id prefix, or cassette path")
+    accept = commands.add_parser(
+        "accept", help="make a test case's latest replay its baseline"
+    )
+    accept.add_argument("case", help="the case name, as in cassettes/<case>.jsonl")
     args = parser.parse_args(argv)
 
     root = Path(os.environ.get("FR_DIR") or ".fr")
@@ -45,6 +54,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _reindex(root)
         if args.command == "runs":
             return _runs(root, args.name, args.status, args.since, args.limit)
+        if args.command == "diff":
+            return _diff(root, args.baseline, args.candidate)
+        if args.command == "accept":
+            return _accept(root, args.case)
         return _show(root, args.run)
     except _Fail as exc:
         print(f"fr: {exc}", file=sys.stderr)
@@ -130,26 +143,7 @@ def _runs(
 
 
 def _show(root: Path, ref: str) -> int:
-    file = Path(ref)
-    if file.suffix != ".jsonl":
-        with closing(_index(root)) as db:
-            # substr, not LIKE: an id prefix must never act as a wildcard.
-            matches = db.execute(
-                "SELECT path FROM runs WHERE substr(run_id, 1, ?) = ?",
-                (len(ref), ref),
-            ).fetchall()
-        if not matches:
-            raise _Fail(f"no run matches {ref!r}")
-        if len(matches) > 1:
-            raise _Fail(f"{len(matches)} runs match {ref!r}; give more of the id")
-        file = root / matches[0][0]
-    try:
-        run, steps = load(file)
-    except OSError as exc:
-        raise _Fail(f"cannot read {file}: {exc.strerror}") from None
-    except CassetteError as exc:
-        raise _Fail(str(exc)) from None
-
+    run, steps = _load(_resolve(root, ref))
     totals = run.totals
     print(f"{run.name}  {run.status}  {run.run_id}")
     print(f"  inputs  {json.dumps(run.inputs, ensure_ascii=False)}")
@@ -166,6 +160,54 @@ def _show(root: Path, ref: str) -> int:
         )
     )
     return 0
+
+
+def _diff(root: Path, baseline: str, candidate: str) -> int:
+    """Print the diff and verdict; exit 1 when the verdict is failed."""
+    result = diff(_load(_resolve(root, baseline)), _load(_resolve(root, candidate)))
+    print(f"{result.verdict}  {result.name}")
+    for line in [*result.reasons, *map(str, result.changes)]:
+        print(f"  {line}")
+    if result.cost_delta_usd is not None:
+        print(f"  cost {result.cost_delta_usd:+.4f} USD")
+    print(f"  latency {result.latency_delta_ms:+.0f} ms")
+    return 1 if result.verdict == "failed" else 0
+
+
+def _accept(root: Path, case: str) -> int:
+    try:
+        path = cases.accept(root, case)
+    except CassetteError as exc:
+        raise _Fail(str(exc)) from None
+    print(f"accepted {path}")
+    return 0
+
+
+def _resolve(root: Path, ref: str) -> Path:
+    """The cassette a run id, unique id prefix or path names."""
+    file = Path(ref)
+    if file.suffix != ".jsonl":
+        with closing(_index(root)) as db:
+            # substr, not LIKE: an id prefix must never act as a wildcard.
+            matches = db.execute(
+                "SELECT path FROM runs WHERE substr(run_id, 1, ?) = ?",
+                (len(ref), ref),
+            ).fetchall()
+        if not matches:
+            raise _Fail(f"no run matches {ref!r}")
+        if len(matches) > 1:
+            raise _Fail(f"{len(matches)} runs match {ref!r}; give more of the id")
+        file = root / matches[0][0]
+    return file
+
+
+def _load(file: Path) -> tuple[Run, list[Step]]:
+    try:
+        return load(file)
+    except OSError as exc:
+        raise _Fail(f"cannot read {file}: {exc.strerror}") from None
+    except CassetteError as exc:
+        raise _Fail(str(exc)) from None
 
 
 def _step_rows(steps: list[Step]) -> list[list[str]]:

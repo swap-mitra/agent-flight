@@ -127,5 +127,5 @@ def test_record_fails_the_test_when_its_baseline_cannot_be_written(
 
     result = pytester.runpytest_subprocess("--fr-mode=record", "-k", "test_triage")
 
-    result.assert_outcomes(passed=1, errors=1)  # the test body ran; teardown failed
-    result.stdout.fnmatch_lines(["*baseline *test_triage.jsonl was not written*"])
+    result.assert_outcomes(failed=1)
+    result.stdout.fnmatch_lines(["*run *test_triage.jsonl was not written*"])

@@ -28,6 +28,7 @@ from flight_recorder.intercept._model import (
     wrapped,
 )
 from flight_recorder.model import Usage
+from flight_recorder.replay import http
 
 # The private attribute each stream manager sends its request through.
 _STREAM_HOOK = {
@@ -148,6 +149,8 @@ def _read(model: str, finish: str | None, fields: dict[str, Any]) -> Read:
 
 def wrap(client: Anthropic | AsyncAnthropic) -> None:
     """Record every model call this client's ``messages`` resource makes."""
+    sdk: Any = client
+    http.install(sdk._client)  # serves fully-recorded replay
     is_async = isinstance(client, AsyncAnthropic)
     _wrap_messages(client.messages, is_async, _STREAM_HOOK)
     _wrap_messages(client.beta.messages, is_async, _BETA_STREAM_HOOK)

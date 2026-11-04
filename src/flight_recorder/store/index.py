@@ -131,11 +131,14 @@ def rebuild(root: Path) -> list[CassetteError]:
     with closing(connect(root / "index.sqlite")) as db, db:
         db.execute("DELETE FROM runs")
         db.execute("DELETE FROM steps")
+        # Baselines last: an accepted baseline shares its replay's run id, and
+        # the row must point at the baseline.
         files = [
-            *(root / "runs").rglob("*.jsonl"),
-            *(root / "cassettes").rglob("*.jsonl"),
+            path
+            for folder in ("runs", "replays", "cassettes")
+            for path in sorted((root / folder).rglob("*.jsonl"))
         ]
-        for cassette in sorted(files):
+        for cassette in files:
             try:
                 run, steps = _cassette.load(cassette)
             except CassetteError as exc:

@@ -11,3 +11,19 @@ class CassetteError(FlightRecorderError):
 
 class PricingError(FlightRecorderError):
     """A pricing file is invalid; raised by fr.configure(), never mid-run."""
+
+
+class PolicyError(FlightRecorderError):
+    """A policy or replay rule is invalid; raised at startup, never mid-run."""
+
+
+class ReplayDivergence(FlightRecorderError):
+    """A replayed run made a call its recording has no match for (FR-P3, P4).
+
+    ``divergence`` holds the step index, the expected and actual calls and the
+    step before them.
+    """
+
+    def __init__(self, divergence: object) -> None:
+        super().__init__(str(divergence))
+        self.divergence = divergence

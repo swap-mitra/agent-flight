@@ -10,6 +10,7 @@ from pydantic import JsonValue
 from flight_recorder.context import active_run
 from flight_recorder.model import Effect, ToolCall
 from flight_recorder.recorder import ActiveRun, PendingStep, error_info, jsonable
+from flight_recorder.replay import engine
 
 P = ParamSpec("P")
 T = TypeVar("T")
@@ -35,6 +36,8 @@ def tool(
     def decorate(fn: Callable[P, T]) -> Callable[P, T]:
         sig = inspect.signature(fn)
 
+        engine.register(fn.__name__, effect)
+
         def close(
             active: ActiveRun,
             pending: PendingStep,
@@ -55,6 +58,29 @@ def tool(
                 ),
             )
 
+        def _served(
+            active: ActiveRun, args: tuple[Any, ...], kwargs: dict[str, Any]
+        ) -> engine.Served | None:
+            if not engine.replaying_now():
+                return None
+            bound = _bind(sig, args, kwargs)
+            served = engine.serve_tool(active, fn.__name__, effect, bound)
+            return None if served is None or served.source == "live" else served
+
+        def _replay(
+            active: ActiveRun,
+            pending: PendingStep,
+            served: engine.Served,
+            args: tuple[Any, ...],
+            kwargs: dict[str, Any],
+        ) -> Any:
+            pending.source = served.source
+            if served.error is not None:
+                close(active, pending, args, kwargs, exc=served.error)
+                raise served.error
+            close(active, pending, args, kwargs, served.result)
+            return served.result
+
         if inspect.iscoroutinefunction(fn):
 
             @functools.wraps(fn)
@@ -62,7 +88,10 @@ def tool(
                 active = active_run()
                 if active is None:
                     return await fn(*args, **kwargs)
+                served = _served(active, args, kwargs)
                 pending = active.open_step("tool")
+                if served is not None:
+                    return _replay(active, pending, served, args, kwargs)
                 try:
                     result = await fn(*args, **kwargs)
                 except BaseException as exc:
@@ -78,7 +107,10 @@ def tool(
             active = active_run()
             if active is None:
                 return fn(*args, **kwargs)
+            served = _served(active, args, kwargs)
             pending = active.open_step("tool")
+            if served is not None:
+                return _replay(active, pending, served, args, kwargs)
             try:
                 result = fn(*args, **kwargs)
             except BaseException as exc:
