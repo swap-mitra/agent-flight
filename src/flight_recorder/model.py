@@ -4,6 +4,7 @@ A cassette holds a Run header, one Step per line, then a footer. These models
 validate that file at the boundary, so everything behind it can trust the data.
 """
 
+from datetime import datetime
 from typing import Any, Literal, Self
 
 from pydantic import BaseModel, JsonValue, model_validator
@@ -62,6 +63,8 @@ class Step(BaseModel):
     parent_seq: int | None = None
     tags: list[str] = []
     source: Literal["live", "replayed", "stubbed"] = "live"
+    # UTC, when the step opened; None in cassettes recorded before it existed.
+    started_at: datetime | None = None
     latency_ms: float
     status: Literal["ok", "error", "denied"]
     model: ModelCall | None = None

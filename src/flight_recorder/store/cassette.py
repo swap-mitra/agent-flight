@@ -28,7 +28,7 @@ BLOB_THRESHOLD = 64 * 1024
 # or a hung disk never keeps the agent's process from exiting.
 EXIT_FLUSH_TIMEOUT = 5.0
 # Last on each line, so a word diff of a re-recorded run shows them apart.
-_VOLATILE = ("run_id", "parent_run_id", "latency_ms")
+_VOLATILE = ("run_id", "parent_run_id", "started_at", "latency_ms")
 _FOOTER_FIELDS = ("status", "output", "totals")
 
 LineType = Literal["header", "step", "footer"]

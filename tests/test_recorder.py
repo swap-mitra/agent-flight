@@ -213,3 +213,21 @@ def test_child_run_inside_a_step_does_not_link_to_parent_runs_step(
 
     child_step = next(s for s in sink.steps if s.tool and s.tool.name == "in_child")
     assert child_step.parent_seq is None
+
+
+def test_steps_record_when_they_started_on_one_precise_clock(sink: ListSink) -> None:
+    before = recorder.now()
+    with fr.run("triage"):
+        active = current()
+        outer = active.open_step("tool")
+        tool_step("inner")
+        active.close_step(
+            outer, "ok", tool=ToolCall(name="outer", effect="read", args={})
+        )
+    after = recorder.now()
+
+    starts = {s.tool.name: s.started_at for s in sink.steps if s.tool}
+    inner, outer_start = starts["inner"], starts["outer"]
+    assert inner is not None and outer_start is not None
+    # Microsecond-distinct even where the system clock ticks coarsely.
+    assert before <= outer_start < inner <= after

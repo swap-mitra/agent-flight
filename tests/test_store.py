@@ -99,7 +99,7 @@ def test_rerecording_an_unchanged_run_changes_only_volatile_fields(
         out: list[str] = []
         for line in only_file(root).read_text(encoding="utf-8").splitlines():
             fields = json.loads(line)
-            for volatile in ("run_id", "parent_run_id", "latency_ms"):
+            for volatile in ("run_id", "parent_run_id", "started_at", "latency_ms"):
                 fields.pop(volatile, None)
             out.append(json.dumps(fields))
         return out

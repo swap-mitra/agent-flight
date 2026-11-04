@@ -12,6 +12,7 @@ import time
 from collections.abc import Callable
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, Protocol, TypeVar
 
 from pydantic import BaseModel, JsonValue
@@ -64,11 +65,26 @@ def error_info(exc: BaseException) -> ErrorInfo:
     return ErrorInfo(type=name, message=str(exc))
 
 
+# The system clock can advance in ticks of a millisecond or more, so wall-clock
+# times are one reading of it plus perf_counter: as precise as latency, and
+# consistent with each other. ponytail: drifts from the system clock by
+# perf_counter's error over the process's life (parts per million).
+_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+_ANCHOR_NS = time.time_ns() - time.perf_counter_ns()
+
+
+def now(perf_ns: int | None = None) -> datetime:
+    """UTC wall-clock time on the recorder's clock (of ``perf_ns``, if given)."""
+    perf_ns = time.perf_counter_ns() if perf_ns is None else perf_ns
+    return _EPOCH + timedelta(microseconds=(_ANCHOR_NS + perf_ns) // 1000)
+
+
 @dataclass
 class PendingStep:
     seq: int
     kind: Literal["model", "tool"]
-    started: float
+    started: float  # perf_counter, for latency
+    started_at: datetime  # wall clock, for placing the step in time
     parent_seq: int | None
     token: Token[tuple[str, int] | None] | None
 
@@ -107,7 +123,8 @@ class ActiveRun:
         outer = _open_step.get()
         parent_seq = outer[1] if outer and outer[0] == self.run.run_id else None
         token = _open_step.set((self.run.run_id, seq))
-        return PendingStep(seq, kind, time.perf_counter(), parent_seq, token)
+        started = time.perf_counter_ns()
+        return PendingStep(seq, kind, started / 1e9, now(started), parent_seq, token)
 
     def release(self, pending: PendingStep) -> None:
         """Stop treating ``pending`` as the open step while it stays pending.
@@ -141,6 +158,7 @@ class ActiveRun:
                 seq=pending.seq,
                 kind=pending.kind,
                 parent_seq=pending.parent_seq,
+                started_at=pending.started_at,
                 latency_ms=(time.perf_counter() - pending.started) * 1000,
                 status=status,
                 model=model,
