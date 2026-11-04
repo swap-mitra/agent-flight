@@ -34,4 +34,9 @@ extraPaths = ["tests"]
 testpaths = ["tests"]
 pythonpath = ["."]
 # Interception must be invisible: a warning that reaches the agent is a bug.
-filterwarnings = ["error"]
+filterwarnings = [
+    "error",
+    # Heptapod's ticketing mock binds ?1-style placeholders with a sequence;
+    # older SQLite builds (Linux CI) warn, and Python 3.14 will raise.
+    "ignore:Binding .* is a named parameter:DeprecationWarning",
+]
