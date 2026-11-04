@@ -1,0 +1,8 @@
+# A candidate routing policy for plan row 3.11: send the reference agent's
+# model calls to a smaller model. CI judges it with
+#   fr eval-route --policy policies/cheaper.toml -- tests/test_replay_suite.py
+# The steps inside the LangGraph node "agent" are tagged node:agent.
+
+[[routes]]
+match = { tag = "node:agent" }
+model = "anthropic/claude-haiku-4-5"

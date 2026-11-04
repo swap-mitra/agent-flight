@@ -71,6 +71,21 @@ jobs:
           git checkout -- reference_agent.py
         env:
           HEPTAPOD_DIR: ${{ github.workspace }}/heptapod
+      # Plan row 3.11: judge a cheaper routing policy by replay. The agent's
+      # model is a scripted mock that answers any model the same way, so the
+      # verdicts hold and the costs are its fixed token counts at each model's
+      # price; the summary says so.
+      - name: Evaluate a cheaper routing policy
+        run: |
+          uv run fr eval-route --policy policies/cheaper.toml --report reports -- tests/test_replay_suite.py -p no:cacheprovider
+          grep -q '^| `test_demo_task` | 100% (1/1) |' reports/eval-route.md
+          {
+            cat reports/eval-route.md
+            echo
+            echo "_The reference agent's model is a scripted mock, so these numbers come from a mock: its fixed token counts priced at each model's rates._"
+          } >> "$GITHUB_STEP_SUMMARY"
+        env:
+          HEPTAPOD_DIR: ${{ github.workspace }}/heptapod
       - name: Post the replay report on the pull request
         if: always() && github.event_name == 'pull_request' && hashFiles('dogfood/reports/report.md') != ''
         # A fork's token can't comment; the report is still in the job log.

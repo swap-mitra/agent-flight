@@ -100,7 +100,7 @@ def registry(monkeypatch: pytest.MonkeyPatch) -> Iterator[Any]:
 
 class ScriptedClaude:
     """Answers like the Messages API with each turn's content blocks, in order,
-    and keeps every request body."""
+    as the model each request names, and keeps every request body."""
 
     def __init__(self, turns: list[list[dict[str, Any]]]) -> None:
         self.turns = turns
@@ -116,7 +116,7 @@ class ScriptedClaude:
                 "id": f"msg_{len(self.bodies)}",
                 "type": "message",
                 "role": "assistant",
-                "model": MODEL,
+                "model": self.bodies[-1]["model"],
                 "content": content,
                 "stop_reason": "tool_use" if calls else "end_turn",
                 "stop_sequence": None,
