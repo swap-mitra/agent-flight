@@ -1,13 +1,19 @@
 [project]
 name = "flight-recorder-ai"
 version = "0.1.0"
-description = "Record, replay and gate AI agent runs: deterministic regression tests, run budgets and approval gates."
+description = "Record every model and tool call of an AI agent run, with tokens, cost and latency."
 readme = "README.md"
 authors = [
     { name = "swap-mitra", email = "swpnlmitra@gmail.com" }
 ]
 requires-python = ">=3.11"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 dependencies = ["pydantic>=2"]
+
+[project.urls]
+Repository = "https://github.com/swap-mitra/flight-recorder-ai"
+Changelog = "https://github.com/swap-mitra/flight-recorder-ai/blob/main/CHANGELOG.md"
 
 [project.scripts]
 fr = "flight_recorder.cli:main"

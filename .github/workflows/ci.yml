@@ -56,3 +56,23 @@ jobs:
       - run: uv run pytest
         env:
           HEPTAPOD_DIR: ${{ github.workspace }}/heptapod
+
+  # Release exit criterion: the README quickstart works as written, from a
+  # clean install of the built wheel. Its first python block is agent.py.
+  quickstart:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.3.3
+        with:
+          python-version: "3.11"
+      - run: uv build
+      - run: |
+          uv venv /tmp/qs
+          uv pip install -p /tmp/qs dist/*.whl
+          cd /tmp/qs
+          awk '/^```python$/{f=1;next} /^```$/{if(f)exit} f' "$GITHUB_WORKSPACE/README.md" > agent.py
+          export PATH=/tmp/qs/bin:$PATH
+          id=$(python agent.py)
+          fr runs | grep refund-desk
+          fr show "$id"
