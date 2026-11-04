@@ -18,6 +18,11 @@ Changelog = "https://github.com/swap-mitra/ai-flight-recorder/blob/main/CHANGELO
 [project.scripts]
 fr = "flight_recorder.cli:main"
 
+# pytest loads the plugin when the package is installed; it is inert
+# for tests that don't use the fr_run fixture.
+[project.entry-points.pytest11]
+flight_recorder = "flight_recorder.pytest_plugin"
+
 [project.optional-dependencies]
 openai = [
     "openai>=1",

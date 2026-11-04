@@ -1,3 +1,5 @@
+pytest_plugins = ["pytester"]
+
 from collections.abc import Iterator
 
 import pytest

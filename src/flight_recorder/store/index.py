@@ -69,6 +69,13 @@ def write(
 ) -> None:
     """Index one cassette line (JSON-mode fields) of the run at ``path``."""
     if line_type == "header":
+        # A re-recorded baseline replaces the run that was at its path.
+        db.execute(
+            "DELETE FROM steps WHERE run_id IN"
+            " (SELECT run_id FROM runs WHERE path = ? AND run_id != ?)",
+            (path, run_id),
+        )
+        db.execute("DELETE FROM runs WHERE path = ? AND run_id != ?", (path, run_id))
         db.execute(
             "INSERT OR REPLACE INTO runs VALUES (?, ?, 'incomplete', ?, 0, 0, 0.0, ?)",
             (run_id, fields["name"], started_at(run_id), path),
@@ -103,8 +110,17 @@ def write(
         )
 
 
+def forget(db: sqlite3.Connection, path: str) -> None:
+    """Remove the run recorded at ``path`` (a deleted cassette) from the index."""
+    db.execute(
+        "DELETE FROM steps WHERE run_id IN (SELECT run_id FROM runs WHERE path = ?)",
+        (path,),
+    )
+    db.execute("DELETE FROM runs WHERE path = ?", (path,))
+
+
 def rebuild(root: Path) -> list[CassetteError]:
-    """Recreate ``<root>/index.sqlite`` from ``<root>/runs``.
+    """Recreate ``<root>/index.sqlite`` from ``<root>/runs`` and ``<root>/cassettes``.
 
     Corrupt cassettes are skipped; their errors are returned.
     """
@@ -115,7 +131,11 @@ def rebuild(root: Path) -> list[CassetteError]:
     with closing(connect(root / "index.sqlite")) as db, db:
         db.execute("DELETE FROM runs")
         db.execute("DELETE FROM steps")
-        for cassette in sorted((root / "runs").rglob("*.jsonl")):
+        files = [
+            *(root / "runs").rglob("*.jsonl"),
+            *(root / "cassettes").rglob("*.jsonl"),
+        ]
+        for cassette in sorted(files):
             try:
                 run, steps = _cassette.load(cassette)
             except CassetteError as exc:

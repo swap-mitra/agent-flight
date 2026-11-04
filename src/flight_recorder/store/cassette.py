@@ -5,12 +5,17 @@ One file per run: a header line, one line per step as it closes, a footer.
 
 import atexit
 import hashlib
+import itertools
 import json
 import logging
 import queue
+import re
 import threading
 import time
-from contextlib import closing
+from collections.abc import Generator, Iterator
+from contextlib import closing, contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -34,6 +39,38 @@ _FOOTER_FIELDS = ("status", "output", "totals")
 LineType = Literal["header", "step", "footer"]
 # (run_id, file, line type, fields); None stops the writer.
 _Item = tuple[str, Path, LineType, dict[str, Any]] | None
+
+
+@dataclass
+class _Case:
+    path: Path
+    run_id: str | None = None
+    children: Iterator[int] = field(default_factory=lambda: itertools.count(1))
+
+
+_case: ContextVar[_Case | None] = ContextVar("flight_recorder_case", default=None)
+
+
+@contextmanager
+def record_case(path: Path) -> Generator[None]:
+    """Write the next run started here to ``path`` (a test baseline) instead of
+    ``runs/``, and each run started inside it to ``child_path``, numbered in
+    start order, so replay can find them again."""
+    token = _case.set(_Case(path))
+    try:
+        yield
+    finally:
+        _case.reset(token)
+
+
+def child_path(case: Path, n: int, name: str) -> Path:
+    """Where the n-th run started inside a case's run is recorded."""
+    return case.with_suffix("") / f"{n}-{safe_name(name)}.jsonl"
+
+
+def safe_name(name: str) -> str:
+    """``name`` usable as a file name on every OS."""
+    return re.sub(r'[<>:"/\\|?*\s]+', "_", name)
 
 
 class CassetteStore:
@@ -60,8 +97,15 @@ class CassetteStore:
         self._failed_runs: set[str] = set()
 
     def run_started(self, run: Run) -> None:
-        day = datetime.now(UTC).strftime("%Y-%m-%d")
-        file = self.root / "runs" / day / f"{run.run_id}.jsonl"
+        case = _case.get()
+        if case is None:
+            day = datetime.now(UTC).strftime("%Y-%m-%d")
+            file = self.root / "runs" / day / f"{run.run_id}.jsonl"
+        elif case.run_id is None:
+            case.run_id = run.run_id
+            file = case.path
+        else:
+            file = child_path(case.path, next(case.children), run.name)
         self._files[run.run_id] = file
         header = run.model_dump(mode="json", exclude=set(_FOOTER_FIELDS))
         self._put((run.run_id, file, "header", header))
@@ -151,7 +195,9 @@ class CassetteStore:
         run_id, file, line_type, fields = item
         line = _line(line_type, {k: self._store_blobs(v) for k, v in fields.items()})
         file.parent.mkdir(parents=True, exist_ok=True)
-        with file.open("a", encoding="utf-8", newline="\n") as f:
+        # A header starts the file, so re-recording a baseline replaces it.
+        mode = "w" if line_type == "header" else "a"
+        with file.open(mode, encoding="utf-8", newline="\n") as f:
             f.write(line)
         # The cassette line goes first: it is the source of truth.
         # ponytail: one connection per write; keep one open in the writer
