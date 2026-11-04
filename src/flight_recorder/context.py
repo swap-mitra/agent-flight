@@ -4,6 +4,8 @@ asyncio tasks inherit the run automatically. Threads do not, so work sent to a
 thread goes through copy_context() or thread_executor().
 """
 
+import functools
+import inspect
 import os
 import time
 import uuid
@@ -15,7 +17,8 @@ from types import TracebackType
 from typing import Any, ParamSpec, TypeVar
 
 from flight_recorder.model import Run
-from flight_recorder.recorder import ActiveRun, jsonable
+from flight_recorder.policy import loader
+from flight_recorder.recorder import ActiveRun, jsonable, step_tags
 
 P = ParamSpec("P")
 T = TypeVar("T")
@@ -49,6 +52,7 @@ class run:
 
     def __init__(self, name: str, inputs: Any = None) -> None:
         parent = _current.get()
+        policy = loader.current()
         self._active = ActiveRun(
             Run(
                 run_id=uuid7(),
@@ -56,6 +60,7 @@ class run:
                 parent_run_id=parent.run.run_id if parent else None,
                 status="incomplete",
                 inputs=jsonable(inputs),
+                policy_hash=policy.hash if policy is not None else None,
             )
         )
         self._token: Token[ActiveRun | None] | None = None
@@ -85,6 +90,38 @@ class run:
         tb: TracebackType | None,
     ) -> None:
         self.__exit__(exc_type, exc, tb)
+
+
+class step_tag:
+    """Tag the steps opened inside: ``with fr.step_tag("extract"):``, or as a
+    decorator on a function or coroutine function. Routes match on tags."""
+
+    def __init__(self, *tags: str) -> None:
+        self.tags = tags
+        self._tokens: list[Token[tuple[str, ...]]] = []
+
+    def __enter__(self) -> None:
+        self._tokens.append(step_tags.set((*step_tags.get(), *self.tags)))
+
+    def __exit__(self, *exc: object) -> None:
+        step_tags.reset(self._tokens.pop())
+
+    def __call__(self, fn: Callable[P, T]) -> Callable[P, T]:
+        if inspect.iscoroutinefunction(fn):
+
+            @functools.wraps(fn)
+            async def tagged_async(*args: Any, **kwargs: Any) -> Any:
+                with step_tag(*self.tags):
+                    return await fn(*args, **kwargs)
+
+            return tagged_async  # type: ignore[return-value]
+
+        @functools.wraps(fn)
+        def tagged(*args: P.args, **kwargs: P.kwargs) -> T:
+            with step_tag(*self.tags):
+                return fn(*args, **kwargs)
+
+        return tagged
 
 
 def copy_context(fn: Callable[P, T]) -> Callable[P, T]:

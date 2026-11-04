@@ -17,7 +17,15 @@ from openai.lib._parsing import type_to_response_format_param
 from openai.lib._parsing._responses import type_to_text_format_param
 from pydantic import BaseModel
 
-from flight_recorder.intercept._model import Read, Request, acall, call, mark, wrapped
+from flight_recorder.intercept._model import (
+    Read,
+    Request,
+    acall,
+    call,
+    counter,
+    mark,
+    wrapped,
+)
 from flight_recorder.model import Usage
 from flight_recorder.replay import http
 
@@ -152,36 +160,43 @@ def wrap(client: OpenAI | AsyncOpenAI) -> None:
     """Record every model call this client makes inside ``fr.run()``."""
     sdk: Any = client
     http.install(sdk._client)  # serves fully-recorded replay
-    resources: list[tuple[type[Request], Any]] = [
-        (_Chat, client.chat.completions),
-        (_Responses, client.responses),
+    is_async = isinstance(client, AsyncOpenAI)
+    # Chat Completions has no token-counting endpoint; budgets estimate.
+    counts = getattr(client.responses, "input_tokens", None)  # newer SDKs
+    count = counter(counts.count, is_async) if counts is not None else None
+    resources: list[tuple[type[Request], Any, Any]] = [
+        (_Chat, client.chat.completions, None),
+        (_Responses, client.responses, count),
     ]
-    for request_type, resource in resources:
+    for request_type, resource, count in resources:
         if wrapped(resource.create):
             continue
         for name in ("create", "parse"):
             original = getattr(resource, name)
-            if isinstance(client, AsyncOpenAI):
-                method = _async_create(request_type, original)
+            if is_async:
+                method = _async_create(request_type, original, count)
             else:
-                method = _sync_create(request_type, original)
+                method = _sync_create(request_type, original, count)
             setattr(resource, name, mark(method))
         # Built on first use around the methods above; drop any built before.
         for cached in ("with_raw_response", "with_streaming_response"):
             cast(dict[str, Any], vars(resource)).pop(cached, None)
 
 
-def _sync_create(request_type: type[Request], original: Any) -> Any:
+def _sync_create(request_type: type[Request], original: Any, count: Any) -> Any:
     @functools.wraps(original)
     def create(**kwargs: Any) -> Any:
-        return call(request_type, kwargs, lambda kw: original(**kw), Stream)
+        return call(request_type, kwargs, lambda kw: original(**kw), Stream, count)
 
     return create
 
 
-def _async_create(request_type: type[Request], original: Any) -> Any:
+def _async_create(request_type: type[Request], original: Any, count: Any) -> Any:
     @functools.wraps(original)
     async def create(**kwargs: Any) -> Any:
-        return await acall(request_type, kwargs, lambda kw: original(**kw), AsyncStream)
+        def send(kw: dict[str, Any]) -> Any:
+            return original(**kw)
+
+        return await acall(request_type, kwargs, send, AsyncStream, count)
 
     return create

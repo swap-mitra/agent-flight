@@ -11,8 +11,9 @@ from contextvars import Token
 from typing import Any, NamedTuple
 
 from flight_recorder.context import active_run
-from flight_recorder.errors import ReplayDivergence
+from flight_recorder.errors import BudgetExceeded, ReplayDivergence
 from flight_recorder.model import ModelCall, Usage
+from flight_recorder.policy import engine as policy
 from flight_recorder.policy import pricing
 from flight_recorder.recorder import ActiveRun, PendingStep, error_info, jsonable
 from flight_recorder.replay import engine
@@ -67,6 +68,11 @@ class Request:
             and not (k == "extra_body" and v is None)  # SDK helpers pass None
         }
         self.kwargs = kwargs
+        self.plan: policy.Plan | None = None  # set when a policy is configured
+
+    def send_to(self, model: str) -> None:
+        """Send this call to ``model``; it stays recorded as requested."""
+        self.kwargs = {**self.kwargs, "model": model}
 
     def given(self, value: Any) -> bool:
         return value is not None and not isinstance(value, self.omitted)
@@ -105,11 +111,12 @@ class Request:
         elif response is not None:
             read = self.read_response(response)
             recorded = response.model_dump(mode="json", warnings=False)
-        model_used = read.model or self.model
+        model_used = read.model or str(self.kwargs.get("model", self.model))
         if error is not None and recorded is None:
-            # A rejected request isn't billed; after any other failure (a
-            # timeout, a client-side parse error) the tokens spent are unknown.
-            cost = 0.0 if isinstance(error, self.rejected) else None
+            # A rejected or denied request isn't billed; after any other failure
+            # (a timeout, a client-side parse error) the tokens spent are unknown.
+            unbilled = (*self.rejected, BudgetExceeded)
+            cost = 0.0 if isinstance(error, unbilled) else None
         elif abandoned or (error is not None and chunks is not None):
             cost = None  # a stream cut short: tokens spent, count unknown
         elif read.usage is None:
@@ -150,8 +157,26 @@ class Request:
             finish_reason="abandoned" if abandoned else read.finish_reason,
             usage=read.usage,
             cost_usd=cost,
+            fallbacks=self.plan.fallbacks if self.plan is not None else [],
             error=error_info(error) if error is not None else None,
         )
+
+
+def counter(count: Any, is_async: bool) -> Callable[[dict[str, Any]], Any]:
+    """Ask the provider's token-counting endpoint ``count`` for a request's
+    input tokens, passing it the request fields it takes."""
+    names = set(inspect.signature(count).parameters) - {"extra_body", *TRANSPORT}
+
+    def fields(kwargs: dict[str, Any]) -> dict[str, Any]:
+        return {k: v for k, v in kwargs.items() if k in names}
+
+    if is_async:
+
+        async def acount(kwargs: dict[str, Any]) -> int:
+            return (await count(**fields(kwargs))).input_tokens
+
+        return acount
+    return lambda kwargs: count(**fields(kwargs)).input_tokens
 
 
 def mark(fn: Callable[..., Any]) -> Callable[..., Any]:
@@ -168,16 +193,31 @@ def call(
     kwargs: dict[str, Any],
     send: Callable[[dict[str, Any]], Any],
     stream_type: type,
+    count: Callable[[dict[str, Any]], int] | None = None,
 ) -> Any:
-    """Send ``kwargs`` and record the call as a model step of the active run."""
+    """Send ``kwargs`` and record the call as a model step of the active run.
+
+    ``count`` asks the provider for the request's input tokens, for budgets
+    configured to count rather than estimate.
+    """
     active = active_run()
     if active is None:
         return send(kwargs)
     request = request_type(kwargs)
     pending = active.open_step("model")
+    counted = None
+    if count is not None and policy.wants_count():
+        counted = _counted(active, lambda: count(request.kwargs))
+    _plan(active, pending, request, counted)
     token = _serve(active, pending, request)
     try:
-        result = send(request.kwargs)
+        while True:
+            try:
+                result = send(request.kwargs)
+                break
+            except Exception as exc:
+                if not policy.fall_back(active, request, exc):
+                    raise
     except BaseException as exc:
         _close(active, pending, request, error=exc)
         raise
@@ -193,6 +233,7 @@ async def acall(
     kwargs: dict[str, Any],
     send: Callable[[dict[str, Any]], Awaitable[Any]],
     stream_type: type,
+    count: Callable[[dict[str, Any]], Awaitable[int]] | None = None,
 ) -> Any:
     """``call`` for async clients."""
     active = active_run()
@@ -200,9 +241,22 @@ async def acall(
         return await send(kwargs)
     request = request_type(kwargs)
     pending = active.open_step("model")
+    counted = None
+    if count is not None and policy.wants_count():
+        try:
+            counted = await count(request.kwargs)
+        except Exception as exc:  # noqa: BLE001  the estimate stands in
+            _count_failed(active, exc)
+    _plan(active, pending, request, counted)
     token = _serve(active, pending, request)
     try:
-        result = await send(request.kwargs)
+        while True:
+            try:
+                result = await send(request.kwargs)
+                break
+            except Exception as exc:
+                if not policy.fall_back(active, request, exc):
+                    raise
     except BaseException as exc:
         _close(active, pending, request, error=exc)
         raise
@@ -211,6 +265,31 @@ async def acall(
             engine.served_response.reset(token)
     _record(active, pending, request, result, stream_type, _async_stream)
     return result
+
+
+def _plan(
+    active: ActiveRun, pending: PendingStep, request: Request, counted: int | None
+) -> None:
+    """Route and budget-check the call; a denial closes the step as denied."""
+    try:
+        policy.before(active, request, pending.tags, counted)
+    except BudgetExceeded as exc:
+        _close(active, pending, request, error=exc)
+        raise
+
+
+def _counted(active: ActiveRun, count: Callable[[], int]) -> int | None:
+    try:
+        return count()
+    except Exception as exc:  # noqa: BLE001  the estimate stands in
+        _count_failed(active, exc)
+        return None
+
+
+def _count_failed(active: ActiveRun, exc: Exception) -> None:
+    active.warn_once(
+        "count", "token counting failed; budgets use an estimate", exc_info=exc
+    )
 
 
 def _serve(
@@ -312,7 +391,11 @@ def _close(
         active.log_failure(exc)
         active.release(pending)
         return
-    active.close_step(pending, "error" if model.error else "ok", model=model)
+    denied = isinstance(call.get("error"), BudgetExceeded)
+    status = "denied" if denied else "error" if model.error else "ok"
+    active.close_step(pending, status, model=model)
+    if not denied:
+        policy.after(active, model)
 
 
 class _LateStep:

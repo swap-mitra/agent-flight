@@ -30,6 +30,13 @@ class Usage(BaseModel):
     cache_write_tokens: int = 0
 
 
+class Fallback(BaseModel):
+    """A model attempt that failed before a fallback model took the call."""
+
+    model: str
+    error: ErrorInfo
+
+
 class ModelCall(BaseModel):
     provider: str
     model_requested: str
@@ -42,6 +49,8 @@ class ModelCall(BaseModel):
     usage: Usage | None = None
     # None when the model is not in the pricing table; cost is never guessed.
     cost_usd: float | None = None
+    # Earlier attempts in the policy's fallback chain, in order (FR-B5).
+    fallbacks: list[Fallback] = []
     error: ErrorInfo | None = None
 
 
@@ -99,4 +108,6 @@ class Run(BaseModel):
     # closes. A cassette only ever holds JSON, so loading loses no validation.
     output: Any = None
     tags: dict[str, str] = {}
+    # The policy file in force when the run started (its content's hash).
+    policy_hash: str | None = None
     totals: Totals = Totals()

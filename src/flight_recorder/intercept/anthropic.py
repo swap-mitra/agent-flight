@@ -24,6 +24,7 @@ from flight_recorder.intercept._model import (
     Request,
     acall,
     call,
+    counter,
     mark,
     wrapped,
 )
@@ -161,6 +162,7 @@ def _wrap_messages(messages: Any, is_async: bool, hooks: dict[bool, str]) -> Non
         return
     stream = messages.stream
     stream_type = AsyncStream if is_async else Stream
+    count = counter(messages.count_tokens, is_async)
 
     def recorded(method: Any) -> Any:
         if is_async:
@@ -168,14 +170,14 @@ def _wrap_messages(messages: Any, is_async: bool, hooks: dict[bool, str]) -> Non
             @functools.wraps(method)
             async def arecorded(**kwargs: Any) -> Any:
                 return await acall(
-                    _Messages, kwargs, lambda kw: method(**kw), stream_type
+                    _Messages, kwargs, lambda kw: method(**kw), stream_type, count
                 )
 
             return arecorded
 
         @functools.wraps(method)
         def srecorded(**kwargs: Any) -> Any:
-            return call(_Messages, kwargs, lambda kw: method(**kw), stream_type)
+            return call(_Messages, kwargs, lambda kw: method(**kw), stream_type, count)
 
         return srecorded
 
@@ -194,10 +196,23 @@ def _wrap_messages(messages: Any, is_async: bool, hooks: dict[bool, str]) -> Non
             if (active := active_run()) is not None:
                 active.log_failure(AttributeError(f"stream manager has no {hook}"))
             return manager
+        unsent = [send]
+
+        def request(kw: dict[str, Any]) -> Any:
+            # The manager's own request, unless routing or a fallback changed
+            # the kwargs: then a manager built from them sends instead.
+            if kw is kwargs and unsent:
+                first = unsent.pop()
+                return first if is_async else first()
+            if unsent and is_async:
+                unsent.pop().close()  # never awaited; close it quietly
+            fresh = getattr(stream(**kw), hook)
+            return fresh if is_async else fresh()
+
         if is_async:
-            sent = acall(_Messages, kwargs, lambda _: send, stream_type)
+            sent = acall(_Messages, kwargs, request, stream_type, count)
         else:
-            sent = lambda: call(_Messages, kwargs, lambda _: send(), stream_type)
+            sent = lambda: call(_Messages, kwargs, request, stream_type, count)
         setattr(manager, hook, sent)
         return manager
 

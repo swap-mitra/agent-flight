@@ -198,6 +198,8 @@ def _run_attributes(run: Run, steps: list[Step]) -> Attributes:
 
 def _step_attributes(step: Step, content: bool) -> Attributes:
     attributes: Attributes = {"fr.step.seq": step.seq, "fr.step.source": step.source}
+    if step.tags:
+        attributes["fr.step.tags"] = step.tags
     if step.model is not None:
         attributes |= _model_attributes(step.model, content)
     if step.tool is not None:
@@ -235,6 +237,8 @@ def _model_attributes(model: ModelCall, content: bool) -> Attributes:
             )
     if model.cost_usd is not None:
         attributes["fr.cost_usd"] = model.cost_usd
+    if model.fallbacks:  # the models that failed before model_used answered
+        attributes["fr.model.fallbacks"] = [f.model for f in model.fallbacks]
     if model.error is not None:
         attributes["error.type"] = model.error.type
     if content:

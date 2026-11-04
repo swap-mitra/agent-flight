@@ -53,6 +53,9 @@ def jsonable(value: Any) -> JsonValue:
         return repr(value)
 
 
+# Tags from fr.step_tag(), innermost last.
+step_tags: ContextVar[tuple[str, ...]] = ContextVar("flight_recorder_tags", default=())
+
 # The innermost open step in this context, as (run_id, seq). Keyed by run so a
 # child run opened inside a tool does not adopt its parent run's step.
 _open_step: ContextVar[tuple[str, int] | None] = ContextVar(
@@ -103,6 +106,9 @@ class ActiveRun:
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _next_seq: int = 0
     _error_logged: bool = False
+    _warned: set[str] = field(default_factory=set[str])
+    # A budget denied a call; the run is recorded as denied (FR-B2).
+    denied: bool = False
     _on_finish: list[Callable[[], None]] = field(
         default_factory=list[Callable[[], None]]
     )
@@ -117,7 +123,7 @@ class ActiveRun:
                 callback()
             except Exception as exc:  # noqa: BLE001  recording fails open (FR-R9)
                 self.log_failure(exc)
-        self.run.status = "error" if failed else "ok"
+        self.run.status = "denied" if self.denied else "error" if failed else "ok"
         self.run.output = jsonable(self.run.output)
         if (run := self._redacted(self.run)) is not None:
             self._emit(lambda sink: sink.run_finished(run))
@@ -128,7 +134,7 @@ class ActiveRun:
             self._next_seq += 1
         outer = _open_step.get()
         parent_seq = outer[1] if outer and outer[0] == self.run.run_id else None
-        tags: list[str] = []
+        tags = list(step_tags.get())
         try:
             for source in tag_sources:
                 tags += source()
@@ -161,7 +167,7 @@ class ActiveRun:
     def close_step(
         self,
         pending: PendingStep,
-        status: Literal["ok", "error"],
+        status: Literal["ok", "error", "denied"],
         *,
         model: ModelCall | None = None,
         tool: ToolCall | None = None,
@@ -219,6 +225,16 @@ class ActiveRun:
                 call(sink)
             except Exception as exc:  # noqa: BLE001  recording fails open (FR-R9)
                 self.log_failure(exc)
+
+    def warn_once(
+        self, key: str, message: str, *args: object, exc_info: Exception | None = None
+    ) -> None:
+        """Log a warning the first time ``key`` comes up in this run."""
+        with self._lock:
+            if key in self._warned:
+                return
+            self._warned.add(key)
+        logger.warning(message, *args, exc_info=exc_info)
 
     def log_failure(self, exc: Exception) -> None:
         """Log a recording failure; only the first per run is logged."""

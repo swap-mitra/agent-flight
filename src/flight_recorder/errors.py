@@ -17,6 +17,10 @@ class PolicyError(FlightRecorderError):
     """A policy or replay rule is invalid; raised at startup, never mid-run."""
 
 
+class BudgetExceeded(FlightRecorderError):
+    """A model call would break a hard budget, so it was not sent (FR-B2)."""
+
+
 class ReplayDivergence(FlightRecorderError):
     """A replayed run made a call its recording has no match for (FR-P3, P4).
 

@@ -5,7 +5,7 @@ from collections.abc import Iterator
 import pytest
 
 from flight_recorder import recorder, redact
-from flight_recorder.policy import pricing
+from flight_recorder.policy import budgets, loader, pricing
 
 
 @pytest.fixture(autouse=True)
@@ -15,4 +15,7 @@ def _isolate_global_config(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     monkeypatch.setattr(recorder, "tag_sources", [])
     monkeypatch.setattr(redact, "rules", list(redact.DEFAULT_RULES))
     monkeypatch.setattr(pricing, "table", pricing.SHIPPED)
+    monkeypatch.setattr(loader, "configured", None)
+    monkeypatch.setattr(loader, "override", None)
+    monkeypatch.setattr(budgets, "state", budgets.state)
     yield
