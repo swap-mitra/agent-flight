@@ -29,6 +29,7 @@ from opentelemetry import trace
 from opentelemetry.trace import SpanKind, Status, StatusCode, TracerProvider
 
 from flight_recorder import recorder
+from flight_recorder.export import messages
 from flight_recorder.model import ModelCall, Run, Step, ToolCall
 from flight_recorder.store.cassette import EXIT_FLUSH_TIMEOUT
 
@@ -237,11 +238,14 @@ def _model_attributes(model: ModelCall, content: bool) -> Attributes:
     if model.error is not None:
         attributes["error.type"] = model.error.type
     if content:
-        # Provider-native JSON: the conventions' gen_ai.input.messages schema
-        # differs from each provider's, so these are not given its names.
-        attributes["fr.model.messages"] = json.dumps(model.messages)
-        if model.response is not None:
-            attributes["fr.model.response"] = json.dumps(model.response)
+        # JSON strings: span attributes can't hold structured values yet,
+        # which the conventions allow for.
+        system, inputs, outputs = messages.convert(model)
+        if system:
+            attributes["gen_ai.system_instructions"] = json.dumps(system)
+        attributes["gen_ai.input.messages"] = json.dumps(inputs)
+        if outputs:  # none for a call that failed before any output arrived
+            attributes["gen_ai.output.messages"] = json.dumps(outputs)
     return attributes
 
 

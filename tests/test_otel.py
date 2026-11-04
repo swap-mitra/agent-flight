@@ -4,6 +4,7 @@ Uses the real OpenTelemetry SDK with an in-memory exporter, and the OpenAI
 mock server for real model calls.
 """
 
+import json
 import sys
 import threading
 import time
@@ -223,12 +224,15 @@ def test_content_is_off_by_default_and_redacted_when_on(
         by_name = exported(sink, spans)
         tool, chat = attrs(by_name["execute_tool lookup"]), attrs(by_name["chat gpt-x"])
         if not capture:
-            assert not {k for k in tool | chat if "arguments" in k or "fr.model." in k}
+            assert not {k for k in tool | chat if "arguments" in k or "messages" in k}
             continue
         assert "sk-ant-" not in tool["gen_ai.tool.call.arguments"]  # redacted first
         assert tool["gen_ai.tool.call.result"] == '"shipped"'
-        assert chat["fr.model.messages"] == "[]"
-        assert '"id": "c1"' in chat["fr.model.response"]
+        assert chat["gen_ai.input.messages"] == "[]"
+        assert json.loads(chat["gen_ai.output.messages"]) == [
+            {"role": "assistant", "parts": [{"type": "text", "content": "shipped"}]}
+        ]
+        assert not {k for k in chat if k.startswith("fr.model.")}
 
 
 class BlockedExporter(SpanExporter):

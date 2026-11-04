@@ -3,6 +3,7 @@
 ## Unreleased
 
 - OpenAI Responses calls that use web search or file search are now priced, with each tool call's fee added to the token cost, instead of recording a null cost. Code interpreter is priced by its tokens only, since its container time is billed per session. Chat Completions web search still records null.
+- With OpenTelemetry content capture on, model content is exported in the GenAI conventions' attributes (`gen_ai.system_instructions`, `gen_ai.input.messages`, `gen_ai.output.messages`) and message schema, with streamed output rebuilt from its chunks. This replaces the provider-native `fr.model.messages` and `fr.model.response` attributes.
 
 ## 0.1.0 (2026-11-04)
 
