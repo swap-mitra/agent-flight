@@ -27,7 +27,7 @@ from flight_recorder.model import Effect
 
 # Heptapod's own agent prompt.
 SYSTEM = (
-    "You operate business systems through tools. Each tool is one system; choose what it does "
+    "You operate systems. Each tool is one system; choose what it does "
     "with the `operation` argument. Rely on tool results, not assumptions. When a tool returns "
     "an error, decide whether to correct the call, try another route, or report the problem. "
     "Finish with a short summary of what you found and what you changed."
