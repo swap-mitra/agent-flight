@@ -7,7 +7,7 @@ name = "fr-dogfood"
 version = "0"
 requires-python = ">=3.12"
 dependencies = [
-    "flight-recorder-ai[anthropic,langchain]",
+    "ai-flight-recorder[anthropic,langchain]",
     "langchain-anthropic>=1",
     "langgraph>=1",
     # Heptapod's own dependencies. Heptapod itself comes from a checkout
@@ -23,7 +23,7 @@ dependencies = [
 package = false
 
 [tool.uv.sources]
-flight-recorder-ai = { path = "..", editable = true }
+ai-flight-recorder = { path = "..", editable = true }
 
 [tool.pyright]
 typeCheckingMode = "strict"

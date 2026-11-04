@@ -9,7 +9,7 @@ v0.1 records. Replay in CI, cost budgets and approval gates come in later releas
 Python 3.11 or newer. No API key needed.
 
 ```bash
-pip install flight-recorder-ai
+pip install ai-flight-recorder
 ```
 
 Save this as `agent.py`:
@@ -50,7 +50,7 @@ Runs are written to `.fr/` in the current directory (set `FR_DIR` or `fr.configu
 Wrap the client instance. Calls, streams and async calls behave exactly as before.
 
 ```bash
-pip install 'flight-recorder-ai[openai]'      # or [anthropic]
+pip install 'ai-flight-recorder[openai]'      # or [anthropic]
 ```
 
 ```python
@@ -67,7 +67,7 @@ with fr.run("triage"):
 ## LangChain and LangGraph
 
 ```bash
-pip install 'flight-recorder-ai[langchain]'
+pip install 'ai-flight-recorder[langchain]'
 ```
 
 ```python

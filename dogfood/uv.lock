@@ -3,6 +3,46 @@ revision = 5
 requires-python = ">=3.12"
 
 [[package]]
+name = "ai-flight-recorder"
+version = "0.1.0"
+source = { editable = "../" }
+dependencies = [
+    { name = "pydantic" },
+]
+
+[package.optional-dependencies]
+anthropic = [
+    { name = "anthropic" },
+]
+langchain = [
+    { name = "langchain-core" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "anthropic", marker = "extra == 'anthropic'", specifier = ">=0.40" },
+    { name = "langchain-core", marker = "extra == 'langchain'", specifier = ">=1" },
+    { name = "openai", marker = "extra == 'openai'", specifier = ">=1" },
+    { name = "opentelemetry-api", marker = "extra == 'otel'", specifier = ">=1.27" },
+    { name = "pydantic", specifier = ">=2" },
+]
+provides-extras = ["openai", "anthropic", "otel", "langchain"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "anthropic", specifier = ">=0.40" },
+    { name = "langchain-anthropic", specifier = ">=1" },
+    { name = "langchain-core", specifier = ">=1" },
+    { name = "langchain-openai", specifier = ">=1" },
+    { name = "langgraph", specifier = ">=1" },
+    { name = "openai", specifier = ">=1" },
+    { name = "opentelemetry-sdk", specifier = ">=1.27" },
+    { name = "pyright" },
+    { name = "pytest", specifier = ">=8" },
+    { name = "ruff" },
+]
+
+[[package]]
 name = "annotated-doc"
 version = "0.0.5"
 source = { registry = "https://pypi.org/simple" }
@@ -246,53 +286,13 @@ wheels = [
 ]
 
 [[package]]
-name = "flight-recorder-ai"
-version = "0.1.0"
-source = { editable = "../" }
-dependencies = [
-    { name = "pydantic" },
-]
-
-[package.optional-dependencies]
-anthropic = [
-    { name = "anthropic" },
-]
-langchain = [
-    { name = "langchain-core" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "anthropic", marker = "extra == 'anthropic'", specifier = ">=0.40" },
-    { name = "langchain-core", marker = "extra == 'langchain'", specifier = ">=1" },
-    { name = "openai", marker = "extra == 'openai'", specifier = ">=1" },
-    { name = "opentelemetry-api", marker = "extra == 'otel'", specifier = ">=1.27" },
-    { name = "pydantic", specifier = ">=2" },
-]
-provides-extras = ["openai", "anthropic", "otel", "langchain"]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "anthropic", specifier = ">=0.40" },
-    { name = "langchain-anthropic", specifier = ">=1" },
-    { name = "langchain-core", specifier = ">=1" },
-    { name = "langchain-openai", specifier = ">=1" },
-    { name = "langgraph", specifier = ">=1" },
-    { name = "openai", specifier = ">=1" },
-    { name = "opentelemetry-sdk", specifier = ">=1.27" },
-    { name = "pyright" },
-    { name = "pytest", specifier = ">=8" },
-    { name = "ruff" },
-]
-
-[[package]]
 name = "fr-dogfood"
 version = "0"
 source = { virtual = "." }
 dependencies = [
+    { name = "ai-flight-recorder", extra = ["anthropic", "langchain"] },
     { name = "anthropic" },
     { name = "fastapi" },
-    { name = "flight-recorder-ai", extra = ["anthropic", "langchain"] },
     { name = "langchain-anthropic" },
     { name = "langgraph" },
     { name = "pyright" },
@@ -302,9 +302,9 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "ai-flight-recorder", extras = ["anthropic", "langchain"], editable = "../" },
     { name = "anthropic", specifier = ">=1.8" },
     { name = "fastapi", specifier = ">=0.141" },
-    { name = "flight-recorder-ai", extras = ["anthropic", "langchain"], editable = "../" },
     { name = "langchain-anthropic", specifier = ">=1" },
     { name = "langgraph", specifier = ">=1" },
     { name = "pyright" },

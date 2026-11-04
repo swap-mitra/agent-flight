@@ -1,5 +1,5 @@
 [project]
-name = "flight-recorder-ai"
+name = "ai-flight-recorder"
 version = "0.1.0"
 description = "Record every model and tool call of an AI agent run, with tokens, cost and latency."
 readme = "README.md"
@@ -12,8 +12,8 @@ license-files = ["LICENSE"]
 dependencies = ["pydantic>=2"]
 
 [project.urls]
-Repository = "https://github.com/swap-mitra/flight-recorder-ai"
-Changelog = "https://github.com/swap-mitra/flight-recorder-ai/blob/main/CHANGELOG.md"
+Repository = "https://github.com/swap-mitra/ai-flight-recorder"
+Changelog = "https://github.com/swap-mitra/ai-flight-recorder/blob/main/CHANGELOG.md"
 
 [project.scripts]
 fr = "flight_recorder.cli:main"
@@ -51,7 +51,7 @@ requires = ["uv_build>=0.13.1,<0.14.0"]
 build-backend = "uv_build"
 
 [tool.uv.build-backend]
-# The distribution is flight-recorder-ai; the import stays flight_recorder.
+# The distribution is ai-flight-recorder; the import stays flight_recorder.
 module-name = "flight_recorder"
 
 [tool.ruff]
