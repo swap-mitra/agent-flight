@@ -28,6 +28,7 @@ Replay a recorded run against a changed agent and get one verdict: same, changed
 - [LangChain and LangGraph](#langchain-and-langgraph)
 - [Replay tests in CI](#replay-tests-in-ci)
 - [Matching and divergence](#matching-and-divergence)
+- [Budgets and routing](#budgets-and-routing)
 - [Configuration](#configuration)
 - [Command line](#command-line)
 - [Failure handling](#failure-handling)
@@ -198,6 +199,53 @@ replay of run 'test_refund' diverged at step 1 (strict):
   after:    {"args":{"order_id":"o1"},"tool":"lookup"}
 ```
 
+## Budgets and routing
+
+A policy file caps what agents spend and decides which model each call goes to. It is checked when `fr.configure(policy="fr.toml")` loads it, so a mistake fails at startup, never mid-run.
+
+```toml
+[budgets]
+per_run_usd = 0.50
+per_day_usd = 25.00          # shared by every process using this store
+soft_warning = 0.8           # log a warning at 80% of a limit
+on_breach = "downgrade"      # warn | downgrade | deny (default)
+downgrade_to = { anthropic = "claude-haiku-4-5", openai = "gpt-5-mini" }
+
+[budgets.by_run_name.triage]
+per_run_tokens = 20000
+
+[[routes]]                   # first match wins
+match = { tag = "extract" }
+model = "anthropic/claude-haiku-4-5"
+
+[[routes]]
+match = { run_name = "report", min_input_tokens = 20000 }
+model = "openai/gpt-5.5"
+
+[fallback]                   # on 429s, 5xx and timeouts, after the SDK's own retries
+"claude-opus-5" = ["claude-opus-5-5"]
+```
+
+```python
+with fr.run("triage"):
+    with fr.step_tag("extract"):  # also a decorator
+        fields = client.messages.create(model="claude-opus-5", ...)  # sent to Haiku
+```
+
+- **Before a call is sent**, its cost is projected from its input tokens and its `max_tokens`, and judged against what the run (and today) already spent. Input tokens are estimated from characters; `token_count = "provider"` asks the provider's counting endpoint instead, at one extra request per call. A call over a hard limit raises `BudgetExceeded` and is never sent; the step and the run are recorded as `denied`.
+- **A route moves a call within its provider**, so routes and fallbacks to another provider's model never apply. The step records `model_requested` and `model_used`, and each failed fallback attempt.
+- **Replays don't touch the daily budget**, and the policy's hash is on every run.
+
+Prove a routing change with replay before it ships. `fr eval-route` replays the test suite under a candidate policy, with tool results from the recordings and the models called live, and reports how often the verdict stays `same` and what it costs:
+
+```bash
+fr eval-route --policy cheaper.toml --report reports -- tests/
+```
+
+| Run | Same verdict | Baseline cost | Candidate cost | Cost delta |
+| --- | --- | --- | --- | --- |
+| `test_demo_task` | 100% (1/1) | $0.0400 | $0.0080 | -$0.0320 (-80.0%) |
+
 ## Configuration
 
 ```python
@@ -205,6 +253,7 @@ fr.configure(
     dir=".fr",  # or FR_DIR
     redact=[fr.redact.pattern(r"ACCT-\d+"), fr.redact.path("$.tool.args.card")],
     pricing="prices.toml",  # add or override model prices
+    policy="fr.toml",  # budgets, routes and fallbacks
     otel=True,  # export runs to OpenTelemetry
 )
 ```
@@ -225,6 +274,7 @@ fr.configure(
   replays/<case>.jsonl          the latest replay of each case
   runs/<date>/<run_id>.jsonl    production recordings
   index.sqlite                  rebuildable with fr reindex
+  state.sqlite                  daily budget counters
 ```
 
 ## Command line
@@ -235,13 +285,15 @@ fr.configure(
 | `fr show <run>` | Print a run step by step |
 | `fr diff <baseline> <candidate>` | Diff two runs or cassettes; exit 1 if failed |
 | `fr accept <case>` | Make a case's latest replay its baseline |
+| `fr eval-route --policy <file> [-- pytest args]` | Replay the suite under a candidate policy; report same-verdict rate and cost delta per run |
 | `fr reindex` | Rebuild the index from the cassettes |
 
 ## Failure handling
 
 - **Interception is invisible.** Your agent gets exactly what the real call returned or raised, and streamed chunks arrive as they arrive.
 - **Recording fails open.** A full disk or an unreachable exporter logs one warning per run; the agent carries on. A test that records a baseline is the exception: it fails if its baseline was not written.
-- **Cost is never guessed.** An unpriced model or modifier records `cost: null`.
+- **Cost is never guessed.** An unpriced model or modifier records `cost: null`, and a USD budget does not judge a call it cannot price.
+- **Budgets and routing fail open.** An error inside them sends the original request unchanged and logs one warning per run. Only a budget's own denial stops a call.
 - **No telemetry.** Nothing leaves your machine except your own model and tool calls and the exporter you configure.
 
 ## Development
@@ -265,11 +317,13 @@ SDK contract tests run the real OpenAI and Anthropic SDKs against mock HTTP tran
 | `replay ... diverged at step N (strict)` | The agent made a call the recording has no match for. If the change is intended, record again or accept the replay; if a field always differs, `fr.matcher(..., ignore=[...])`. |
 | A tools-recorded case fails some runs | Live models vary. Repeat it with `repeats` and `min_pass`, or replay fully recorded. |
 | `cost` is null | The model is not in the pricing table. Add it with `fr.configure(pricing="prices.toml")`. |
+| `BudgetExceeded: per-run USD budget ...` | A call would break a hard budget, so it was not sent and the run is recorded as `denied`. Raise the limit, or set `on_breach` to `warn` or `downgrade`. |
+| `PolicyError ... say which provider` | A policy names a model the pricing table doesn't know. Write it as `openai/<model>` or `anthropic/<model>`. |
 | `PolicyError ... live on divergence` | Live replay of a write or irreversible tool is refused. Use `stub`, or `allow_write=True` for a write tool you trust. |
 
 ## Project status
 
-Version 0.2 adds replay: record and replay modes in pytest, divergence policies, diffs and verdicts, repeats, reports and baseline updates. Version 0.1 shipped recording for OpenAI, Anthropic, LangChain and plain Python tools, OpenTelemetry export and pricing. Next: run budgets and model routing (v0.3), then approval gates for irreversible tool calls (v0.4).
+On main, not yet released: budgets, model routing, fallbacks and `fr eval-route` (v0.3). Version 0.2 added replay: record and replay modes in pytest, divergence policies, diffs and verdicts, repeats, reports and baseline updates. Version 0.1 shipped recording for OpenAI, Anthropic, LangChain and plain Python tools, OpenTelemetry export and pricing. Next: approval gates for irreversible tool calls (v0.4).
 
 ## About the name
 

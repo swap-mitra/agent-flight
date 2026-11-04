@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased (0.3.0)
+
+Budgets and routing: cost becomes something you set, and a routing change is proven by replay before it ships.
+
+- `fr.configure(policy="fr.toml")` loads a policy file of budgets, routes and fallbacks. Anything invalid raises `PolicyError` at startup, and each run records the policy's hash.
+- Budgets per run, per run name and per day, in USD or tokens. A call is judged before it is sent, on its projected cost (input tokens plus `max_tokens`). Over a hard limit, `on_breach` warns, downgrades to a smaller model, or denies: `BudgetExceeded` is raised, nothing is sent, and the run is recorded as `denied`. A soft warning fires at 80% by default. Daily counters live in `state.sqlite`, shared by every process using the store.
+- Input tokens are estimated from characters by default; `token_count = "provider"` asks the provider's token-counting endpoint (Anthropic Messages, OpenAI Responses).
+- Routes send a call to another model of the same provider by step tag, run name or input size. `fr.step_tag("extract")` tags steps, as a context manager or a decorator; tags are on steps and spans.
+- Fallback chains retry a call on another model after a 429, a 5xx or a timeout. Each failed attempt is recorded on the step and on its span.
+- Routing and fallbacks reach LangChain models wrapped with `fr.langchain.wrap_model`, since they go through the same SDK clients.
+- `fr eval-route --policy <file>` replays the test suite under a candidate policy, models live, and reports the same-verdict rate and cost delta for each run. The pytest plugin's `--fr-policy` does the replay.
+- Budgets and routing fail open: an error inside them sends the original request unchanged and warns once per run.
+
 ## 0.2.0 (2026-11-04)
 
 Replay: a recorded run becomes a regression test.
