@@ -54,6 +54,8 @@ extend-select = ["I", "UP", "B"]
 
 [tool.pyright]
 typeCheckingMode = "strict"
+# dogfood/ is its own project with its own environment, checked by its own job.
+exclude = ["dogfood", "**/.venv", "**/__pycache__"]
 pythonVersion = "3.11"
 
 [tool.pytest.ini_options]

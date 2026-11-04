@@ -22,3 +22,26 @@ jobs:
       - run: uv run ruff check .
       - run: uv run pyright
       - run: uv run pytest
+
+  # The reference agent over Heptapod's tools (plan row 1.14). Heptapod needs
+  # Python 3.12+ and its mock backends, which only a checkout has.
+  dogfood:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dogfood
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
+        with:
+          repository: swap-mitra/heptapod
+          ref: 1c22c23345ecda969a158f6e08d0487931b4ff62
+          path: heptapod
+      - uses: astral-sh/setup-uv@v10.3.3
+        with:
+          python-version: "3.12"
+      - run: uv sync --locked
+      - run: uv run pyright
+      - run: uv run pytest
+        env:
+          HEPTAPOD_DIR: ${{ github.workspace }}/heptapod

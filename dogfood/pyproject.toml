@@ -1,0 +1,37 @@
+# The dogfooding suite (plan row 1.14): the reference agent, a LangGraph agent
+# over Heptapod's tools, recorded by this repo's library. Heptapod needs Python
+# 3.12+ and its mock backends, so this runs apart from the unit tests:
+#   HEPTAPOD_DIR=<heptapod checkout> uv run --project dogfood pytest dogfood
+[project]
+name = "fr-dogfood"
+version = "0"
+requires-python = ">=3.12"
+dependencies = [
+    "flight-recorder[anthropic,langchain]",
+    "langchain-anthropic>=1",
+    "langgraph>=1",
+    # Heptapod's own dependencies. Heptapod itself comes from a checkout
+    # (HEPTAPOD_DIR), because its mock backends are not in its package.
+    "anthropic>=1.8",
+    "fastapi>=0.141",
+    "uvicorn>=0.54",
+    "pytest>=8",
+    "pyright",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+flight-recorder = { path = "..", editable = true }
+
+[tool.pyright]
+typeCheckingMode = "strict"
+pythonVersion = "3.12"
+extraPaths = ["tests"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+# Interception must be invisible: a warning that reaches the agent is a bug.
+filterwarnings = ["error"]
