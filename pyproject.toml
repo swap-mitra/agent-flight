@@ -1,6 +1,6 @@
 [project]
 name = "ai-flight-recorder"
-version = "0.1.0"
+version = "0.1.1"
 description = "Record every model and tool call of an AI agent run, with tokens, cost and latency."
 readme = "README.md"
 authors = [
