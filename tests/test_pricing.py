@@ -90,8 +90,21 @@ def test_invalid_pricing_file_fails_at_configure_and_changes_nothing(
     assert pricing.table is pricing.SHIPPED
 
 
-def test_web_searches_are_billed_per_search_on_top_of_tokens() -> None:
+def test_tool_calls_are_billed_per_call_on_top_of_tokens() -> None:
     usage = Usage(input_tokens=M, output_tokens=0)
-    cost = pricing.cost("anthropic", "claude-opus-5-5", usage, web_searches=3)
+    cost = pricing.cost(
+        "anthropic", "claude-opus-5-5", usage, tool_calls={"web_search": 3}
+    )
     assert cost == pytest.approx(4.0 + 3 * 10.0 / 1000)
-    assert pricing.cost("openai", "gpt-5", usage, web_searches=1) is None
+    calls = {"web_search": 1, "web_search_preview": 2, "file_search": 4}
+    cost = pricing.cost("openai", "gpt-4o", usage, tool_calls=calls)
+    assert cost == pytest.approx(2.5 + (10.0 + 2 * 25.0 + 4 * 2.5) / 1000)
+    # A fee the entry lacks: Anthropic has no file search; chat-latest has no
+    # preview rate, since the page doesn't say if it is a reasoning model.
+    file_search = {"file_search": 1}
+    assert (
+        pricing.cost("anthropic", "claude-opus-5-5", usage, tool_calls=file_search)
+        is None
+    )
+    preview = {"web_search_preview": 1}
+    assert pricing.cost("openai", "chat-latest", usage, tool_calls=preview) is None

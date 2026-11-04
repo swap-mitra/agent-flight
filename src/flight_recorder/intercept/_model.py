@@ -6,7 +6,7 @@ responses read, then routes each SDK call through ``call`` or ``acall``.
 
 import inspect
 import threading
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping
 from typing import Any, NamedTuple
 
 from flight_recorder.context import active_run
@@ -34,7 +34,8 @@ class Read(NamedTuple):
     usage: Usage | None
     cache_write_1h: int = 0  # of usage.cache_write_tokens, priced apart
     unpriced: str | None = None  # a pricing modifier the table can't express
-    web_searches: int = 0  # server-side searches, billed per search
+    # Calls of the provider's fee-charging built-in tools, by fee name.
+    tool_calls: Mapping[str, int] = {}
     # When the provider bills a call as several parts (an advisor model, a
     # compaction), the parts replace usage for pricing.
     parts: tuple[Part, ...] = ()
@@ -122,14 +123,14 @@ class Request:
                 )
                 for part in parts
             ]
-            if read.web_searches:
+            if any(read.tool_calls.values()):
                 no_tokens = Usage(input_tokens=0, output_tokens=0)
                 costs.append(
                     pricing.cost(
                         self.provider,
                         model_used,
                         no_tokens,
-                        web_searches=read.web_searches,
+                        tool_calls=read.tool_calls,
                     )
                 )
             if any(c is None for c in costs):

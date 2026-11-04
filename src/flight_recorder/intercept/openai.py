@@ -63,7 +63,8 @@ class _Chat(_OpenAI):
         return Read(model, finish, usage, unpriced=_join(tier, self._searched()))
 
     def _searched(self) -> str | None:
-        # Chat web search bills per request on top of tokens (row 1.11a).
+        # Chat web search bills on top of tokens, at a fee OpenAI does not
+        # publish for its search models, so it is never guessed.
         return "web_search_options" if "web_search_options" in self.params else None
 
 
@@ -84,13 +85,38 @@ class _Responses(_OpenAI):
                 output_tokens=usage.output_tokens,
                 cache_read_tokens=(cached and cached.cached_tokens) or 0,
             )
-        tools = sorted({i.type for i in response.output if i.type in _FEE_TOOLS})
+        types = [item.type for item in response.output]
+        search, unpriced = self._search_fee()
+        searches = types.count("web_search_call")
         return Read(
             response.model,
             finish,
             usage,
-            unpriced=_join(_tier(response), *tools),
+            unpriced=_join(_tier(response), unpriced if searches else None),
+            tool_calls={
+                search: searches,
+                "file_search": types.count("file_search_call"),
+            },
         )
+
+    def _search_fee(self) -> tuple[str, str | None]:
+        """The fee a web search call is billed at, from the tools the request
+        declared (web_search_call items don't say which tool made them), and
+        why it can't be priced if both were declared."""
+        tools = self.params.get("tools")
+        kinds = [
+            str(tool.get("type"))
+            for tool in (tools if isinstance(tools, list) else [])
+            if isinstance(tool, dict)
+        ]
+        declared = {
+            "web_search_preview" if k.startswith("web_search_preview") else "web_search"
+            for k in kinds
+            if k.startswith("web_search")
+        }
+        if len(declared) > 1:
+            return "web_search", "both web_search and web_search_preview"
+        return (declared.pop() if declared else "web_search"), None
 
     def read_chunks(self, chunks: list[Any]) -> Read:
         # The final event carries the whole response.
@@ -109,12 +135,6 @@ def _usage(usage: Any) -> Usage | None:
         output_tokens=usage.completion_tokens,
         cache_read_tokens=(cached and cached.cached_tokens) or 0,
     )
-
-
-# ponytail: built-in tools OpenAI bills per call or per session on top of
-# tokens. Their fees are not in the table yet, so a call using one records a
-# null cost instead of an undercount (row 1.11a prices them).
-_FEE_TOOLS = ("web_search_call", "file_search_call", "code_interpreter_call")
 
 
 def _join(*reasons: str | None) -> str | None:

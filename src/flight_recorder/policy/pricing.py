@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import tomllib
+from collections.abc import Mapping
 from importlib import resources
 
 from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError
@@ -35,7 +36,11 @@ class LongContext(Rates):
 
 
 class Entry(Rates):
-    web_search: float | None = None  # USD per 1,000 searches, at any prompt size
+    # Per-call fees for the provider's built-in tools, in USD per 1,000 calls,
+    # at any prompt size. Their names are the keys of cost()'s ``tool_calls``.
+    web_search: float | None = None
+    web_search_preview: float | None = None  # OpenAI's older search tool
+    file_search: float | None = None
     long_context: LongContext | None = None
 
 
@@ -86,13 +91,14 @@ def cost(
     usage: Usage,
     *,
     cache_write_1h: int = 0,
-    web_searches: int = 0,
+    tool_calls: Mapping[str, int] | None = None,
     unpriced: str | None = None,
 ) -> float | None:
     """USD cost of one call, or None (warned once) when it cannot be priced.
 
     ``cache_write_1h`` is the part of ``usage.cache_write_tokens`` written to a
-    one-hour cache; ``web_searches`` counts the provider's server-side searches;
+    one-hour cache; ``tool_calls`` counts the calls of each fee-charging built-in
+    tool (an Entry fee field: web_search, web_search_preview, file_search);
     ``unpriced`` names a modifier the call used that the table cannot express,
     such as a non-standard service tier.
     """
@@ -122,10 +128,12 @@ def cost(
                 return _unpriced(f"no {name} price for {provider} model {model!r}")
             total += count * rate
     fee = 0.0
-    if web_searches:
-        if entry.web_search is None:
-            return _unpriced(f"no web_search price for {provider} model {model!r}")
-        fee = web_searches * entry.web_search / 1000
+    for name, count in (tool_calls or {}).items():
+        if count:
+            per_1k: float | None = getattr(entry, name)
+            if per_1k is None:
+                return _unpriced(f"no {name} price for {provider} model {model!r}")
+            fee += count * per_1k / 1000
     return total / 1_000_000 + fee
 
 

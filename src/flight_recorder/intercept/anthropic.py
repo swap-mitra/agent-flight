@@ -139,7 +139,9 @@ def _read(model: str, finish: str | None, fields: dict[str, Any]) -> Read:
         cache_write_1h=whole.cache_write_1h,
         unpriced=", ".join(dict.fromkeys(modifiers)) or None,
         # Web fetch is free; code execution hours are billed per organisation.
-        web_searches=tools.web_search_requests if tools is not None else 0,
+        tool_calls={
+            "web_search": tools.web_search_requests if tools is not None else 0
+        },
         parts=tuple(parts),
     )
 

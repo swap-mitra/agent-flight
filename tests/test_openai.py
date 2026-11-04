@@ -381,7 +381,8 @@ def test_unsupported_client_is_a_type_error() -> None:
 def priced(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     prices = tmp_path / "prices.toml"
     prices.write_text(
-        '[openai]\n"gpt-x" = { input = 1.0, cache_read = 0.5, output = 2.0 }\n'
+        '[openai]\n"gpt-x" = { input = 1.0, cache_read = 0.5, output = 2.0,'
+        " web_search = 10.0, web_search_preview = 25.0, file_search = 2.5 }\n"
     )
     monkeypatch.setattr(pricing, "table", pricing.load(prices))
 
@@ -561,21 +562,72 @@ def test_async_parse_and_raw_response(sink: Sink) -> None:
     assert [model_of(s).usage.input_tokens for s in sink.steps] == [12, 12, 12]
 
 
-def test_built_in_tool_fees_record_null_instead_of_an_undercount(
+def search(action: str) -> dict[str, Any]:
+    return {
+        "type": "web_search_call",
+        "id": f"ws-{action}",
+        "status": "completed",
+        "action": {"type": action, "query": "order o1", "url": "https://x.test"},
+    }
+
+
+FILE_SEARCH: dict[str, Any] = {
+    "type": "file_search_call",
+    "id": "fs1",
+    "status": "completed",
+    "queries": ["refund policy"],
+}
+CODE: dict[str, Any] = {
+    "type": "code_interpreter_call",
+    "id": "ci1",
+    "status": "completed",
+    "code": "1 + 1",
+    "container_id": "c1",
+    "outputs": [],
+}
+TOKENS = 16 / 1_000_000  # Server's usage at gpt-x's token rates
+
+
+@pytest.mark.parametrize(
+    ("tool", "per_search"),
+    [("web_search", 10.0), ("web_search_preview_2025_03_11", 25.0)],
+)
+def test_built_in_tool_calls_add_their_fees(
+    sink: Sink, priced: None, tool: str, per_search: float
+) -> None:
+    # Every web_search_call item is a billed call, page opens included.
+    # Container time is billed per session, so code interpreter adds nothing.
+    output = [search("search"), search("open_page"), FILE_SEARCH, CODE]
+    llm = client(Server(output=output))
+    # Any: the SDK types tools as a union of TypedDicts.
+    tools: Any = [{"type": tool}, {"type": "file_search", "vector_store_ids": ["v"]}]
+    with fr.run("triage"):
+        llm.responses.create(model="gpt-x", input="hi", tools=tools)
+        list(llm.responses.create(model="gpt-x", input="hi", tools=tools, stream=True))
+
+    fees = 2 * per_search / 1000 + 2.5 / 1000
+    for step in sink.steps:
+        assert model_of(step).cost_usd == pytest.approx(TOKENS + fees)
+
+
+def test_built_in_tool_calls_that_cannot_be_priced_record_null(
     sink: Sink, priced: None, caplog: pytest.LogCaptureFixture
 ) -> None:
-    search = {
-        "type": "web_search_call",
-        "id": "ws1",
-        "status": "completed",
-        "action": {"type": "search", "query": "order o1"},
-    }
-    llm = client(Server(output=[search]))
+    both: Any = [{"type": "web_search"}, {"type": "web_search_preview"}]
     with fr.run("triage"):
-        llm.responses.create(model="gpt-x", input="hi")
-        list(llm.responses.create(model="gpt-x", input="hi", stream=True))
-        llm.chat.completions.create(model="gpt-x", messages=[], web_search_options={})
+        # Both search tools declared: the call items don't say which ran.
+        client(Server(output=[search("search")])).responses.create(
+            model="gpt-x", input="hi", tools=both
+        )
+        # Chat search: OpenAI publishes no per-call fee for its search models.
+        client(Server()).chat.completions.create(
+            model="gpt-x", messages=[], web_search_options={}
+        )
+        # Declared but unused tools cost nothing extra.
+        client(Server()).responses.create(model="gpt-x", input="hi", tools=both)
 
-    assert [model_of(s).cost_usd for s in sink.steps] == [None, None, None]
-    assert caplog.text.count("used web_search_call") == 1
+    costs = [model_of(s).cost_usd for s in sink.steps]
+    assert costs[:2] == [None, None]
+    assert costs[2] == pytest.approx(TOKENS)
+    assert caplog.text.count("used both web_search and web_search_preview") == 1
     assert caplog.text.count("used web_search_options") == 1

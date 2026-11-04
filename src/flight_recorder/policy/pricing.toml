@@ -11,8 +11,12 @@
 #
 # Rates per million tokens: input (uncached prompt tokens), output,
 # cache_read, cache_write (Anthropic 5-minute writes) and cache_write_1h.
-# web_search is USD per 1,000 server-side searches. A call that used a rate
-# its entry lacks records cost null. long_context holds the token rates for
+# web_search, web_search_preview and file_search are USD per 1,000 calls of
+# that built-in tool (OpenAI's tool fees copied on 2026-11-04). OpenAI's
+# web_search_preview is 25.00 on non-reasoning models and 10.00 on reasoning
+# models. Container time (OpenAI code interpreter and hosted shell, Anthropic
+# code execution) is billed per session, not per call, so it is not priced.
+# A call that used a rate its entry lacks records cost null. long_context holds the token rates for
 # prompts over `above` tokens, cached tokens included.
 
 [anthropic]
@@ -40,33 +44,33 @@
 "claude-3-5-haiku" = { input = 0.80, output = 4.00, cache_read = 0.08, cache_write = 1.00, cache_write_1h = 1.60, web_search = 10.00 }
 
 [openai]
-"gpt-6-astra" = { input = 10.00, output = 50.00, cache_read = 1.00, long_context = { above = 272_000, input = 20.00, output = 75.00, cache_read = 2.00 } }
-"gpt-6.1-sol" = { input = 2.00, output = 10.00, cache_read = 0.10, long_context = { above = 272_000, input = 4.00, output = 15.00, cache_read = 0.20 } }
-"gpt-6.1-terra" = { input = 1.00, output = 5.00, cache_read = 0.05, long_context = { above = 272_000, input = 2.00, output = 7.50, cache_read = 0.10 } }
-"gpt-6-luna" = { input = 0.10, output = 0.50, cache_read = 0.01, long_context = { above = 272_000, input = 0.20, output = 0.75, cache_read = 0.02 } }
-"gpt-6-sol" = { input = 2.00, output = 10.00, cache_read = 0.20, long_context = { above = 272_000, input = 4.00, output = 15.00, cache_read = 0.40 } }
-"gpt-5.6-sol" = { input = 4.00, output = 20.00, cache_read = 0.40, long_context = { above = 272_000, input = 8.00, output = 30.00, cache_read = 0.80 } }
-"gpt-5.6-terra" = { input = 2.00, output = 12.00, cache_read = 0.20, long_context = { above = 272_000, input = 4.00, output = 18.00, cache_read = 0.40 } }
-"gpt-5.6-luna" = { input = 0.20, output = 1.20, cache_read = 0.02, long_context = { above = 272_000, input = 0.40, output = 1.80, cache_read = 0.04 } }
-"gpt-5.5" = { input = 5.00, output = 30.00, cache_read = 0.50, long_context = { above = 272_000, input = 10.00, output = 45.00, cache_read = 1.00 } }
-"gpt-5.5-pro" = { input = 30.00, output = 180.00, long_context = { above = 272_000, input = 60.00, output = 270.00 } }
-"gpt-5.4" = { input = 2.50, output = 15.00, cache_read = 0.25, long_context = { above = 272_000, input = 5.00, output = 22.50, cache_read = 0.50 } }
-"gpt-5.4-pro" = { input = 30.00, output = 180.00, long_context = { above = 272_000, input = 60.00, output = 270.00 } }
-"gpt-5.4-mini" = { input = 0.75, output = 4.50, cache_read = 0.075 }
-"gpt-5.4-nano" = { input = 0.20, output = 1.25, cache_read = 0.02 }
-"gpt-5.3-codex" = { input = 1.75, output = 14.00, cache_read = 0.175 }
-"gpt-5.2" = { input = 1.75, output = 14.00, cache_read = 0.175 }
-"gpt-5.2-pro" = { input = 21.00, output = 168.00 }
-"gpt-5.1" = { input = 1.25, output = 10.00, cache_read = 0.125 }
-"gpt-5" = { input = 1.25, output = 10.00, cache_read = 0.125 }
-"gpt-5-mini" = { input = 0.25, output = 2.00, cache_read = 0.025 }
-"gpt-5-nano" = { input = 0.05, output = 0.40, cache_read = 0.005 }
-"gpt-5-pro" = { input = 15.00, output = 120.00 }
-"gpt-5-search-api" = { input = 1.25, output = 10.00, cache_read = 0.125 }
-"chat-latest" = { input = 5.00, output = 30.00, cache_read = 0.50 }
-"gpt-4.1" = { input = 2.00, output = 8.00, cache_read = 0.50 }
-"gpt-4.1-mini" = { input = 0.40, output = 1.60, cache_read = 0.10 }
-"gpt-4o" = { input = 2.50, output = 10.00, cache_read = 1.25 }
-"gpt-4o-mini" = { input = 0.15, output = 0.60, cache_read = 0.075 }
-"o3-pro" = { input = 20.00, output = 80.00 }
-"o3" = { input = 2.00, output = 8.00, cache_read = 0.50 }
+"gpt-6-astra" = { input = 10.00, output = 50.00, cache_read = 1.00, web_search = 10.00, web_search_preview = 10.00, file_search = 2.50, long_context = { above = 272_000, input = 20.00, output = 75.00, cache_read = 2.00 } }
+"gpt-6.1-sol" = { input = 2.00, output = 10.00, cache_read = 0.10, web_search = 10.00, web_search_preview = 10.00, file_search = 2.50, long_context = { above = 272_000, input = 4.00, output = 15.00, cache_read = 0.20 } }
+"gpt-6.1-terra" = { input = 1.00, output = 5.00, cache_read = 0.05, web_search = 10.00, web_search_preview = 10.00, file_search = 2.50, long_context = { above = 272_000, input = 2.00, output = 7.50, cache_read = 0.10 } }
+"gpt-6-luna" = { input = 0.10, output = 0.50, cache_read = 0.01, web_search = 10.00, web_search_preview = 10.00, file_search = 2.50, long_context = { above = 272_000, input = 0.20, output = 0.75, cache_read = 0.02 } }
+"gpt-6-sol" = { input = 2.00, output = 10.00, cache_read = 0.20, web_search = 10.00, web_search_preview = 10.00, file_search = 2.50, long_context = { above = 272_000, input = 4.00, output = 15.00, cache_read = 0.40 } }
+"gpt-5.6-sol" = { input = 4.00, output = 20.00, cache_read = 0.40, web_search = 10.00, web_search_preview = 10.00, file_search = 2.50, long_context = { above = 272_000, input = 8.00, output = 30.00, cache_read = 0.80 } }
+"gpt-5.6-terra" = { input = 2.00, output = 12.00, cache_read = 0.20, web_search = 10.00, web_search_preview = 10.00, file_search = 2.50, long_context = { above = 272_000, input = 4.00, output = 18.00, cache_read = 0.40 } }
+"gpt-5.6-luna" = { input = 0.20, output = 1.20, cache_read = 0.02, web_search = 10.00, web_search_preview = 10.00, file_search = 2.50, long_context = { above = 272_000, input = 0.40, output = 1.80, cache_read = 0.04 } }
+"gpt-5.5" = { input = 5.00, output = 30.00, cache_read = 0.50, web_search = 10.00, web_search_preview = 10.00, file_search = 2.50, long_context = { above = 272_000, input = 10.00, output = 45.00, cache_read = 1.00 } }
+"gpt-5.5-pro" = { input = 30.00, output = 180.00, web_search = 10.00, web_search_preview = 10.00, file_search = 2.50, long_context = { above = 272_000, input = 60.00, output = 270.00 } }
+"gpt-5.4" = { input = 2.50, output = 15.00, cache_read = 0.25, web_search = 10.00, web_search_preview = 10.00, file_search = 2.50, long_context = { above = 272_000, input = 5.00, output = 22.50, cache_read = 0.50 } }
+"gpt-5.4-pro" = { input = 30.00, output = 180.00, web_search = 10.00, web_search_preview = 10.00, file_search = 2.50, long_context = { above = 272_000, input = 60.00, output = 270.00 } }
+"gpt-5.4-mini" = { input = 0.75, output = 4.50, cache_read = 0.075, web_search = 10.00, web_search_preview = 10.00, file_search = 2.50 }
+"gpt-5.4-nano" = { input = 0.20, output = 1.25, cache_read = 0.02, web_search = 10.00, web_search_preview = 10.00, file_search = 2.50 }
+"gpt-5.3-codex" = { input = 1.75, output = 14.00, cache_read = 0.175, web_search = 10.00, web_search_preview = 10.00, file_search = 2.50 }
+"gpt-5.2" = { input = 1.75, output = 14.00, cache_read = 0.175, web_search = 10.00, web_search_preview = 10.00, file_search = 2.50 }
+"gpt-5.2-pro" = { input = 21.00, output = 168.00, web_search = 10.00, web_search_preview = 10.00, file_search = 2.50 }
+"gpt-5.1" = { input = 1.25, output = 10.00, cache_read = 0.125, web_search = 10.00, web_search_preview = 10.00, file_search = 2.50 }
+"gpt-5" = { input = 1.25, output = 10.00, cache_read = 0.125, web_search = 10.00, web_search_preview = 10.00, file_search = 2.50 }
+"gpt-5-mini" = { input = 0.25, output = 2.00, cache_read = 0.025, web_search = 10.00, web_search_preview = 10.00, file_search = 2.50 }
+"gpt-5-nano" = { input = 0.05, output = 0.40, cache_read = 0.005, web_search = 10.00, web_search_preview = 10.00, file_search = 2.50 }
+"gpt-5-pro" = { input = 15.00, output = 120.00, web_search = 10.00, web_search_preview = 10.00, file_search = 2.50 }
+"gpt-5-search-api" = { input = 1.25, output = 10.00, cache_read = 0.125, web_search = 10.00, file_search = 2.50 }
+"chat-latest" = { input = 5.00, output = 30.00, cache_read = 0.50, web_search = 10.00, file_search = 2.50 }
+"gpt-4.1" = { input = 2.00, output = 8.00, cache_read = 0.50, web_search = 10.00, web_search_preview = 25.00, file_search = 2.50 }
+"gpt-4.1-mini" = { input = 0.40, output = 1.60, cache_read = 0.10, web_search = 10.00, web_search_preview = 25.00, file_search = 2.50 }
+"gpt-4o" = { input = 2.50, output = 10.00, cache_read = 1.25, web_search = 10.00, web_search_preview = 25.00, file_search = 2.50 }
+"gpt-4o-mini" = { input = 0.15, output = 0.60, cache_read = 0.075, web_search = 10.00, web_search_preview = 25.00, file_search = 2.50 }
+"o3-pro" = { input = 20.00, output = 80.00, web_search = 10.00, web_search_preview = 10.00, file_search = 2.50 }
+"o3" = { input = 2.00, output = 8.00, cache_read = 0.50, web_search = 10.00, web_search_preview = 10.00, file_search = 2.50 }
