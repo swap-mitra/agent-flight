@@ -29,6 +29,7 @@ Replay a recorded run against a changed agent and get one verdict: same, changed
 - [Replay tests in CI](#replay-tests-in-ci)
 - [Matching and divergence](#matching-and-divergence)
 - [Budgets and routing](#budgets-and-routing)
+- [Approval gates](#approval-gates)
 - [Configuration](#configuration)
 - [Command line](#command-line)
 - [Failure handling](#failure-handling)
@@ -246,6 +247,40 @@ fr eval-route --policy cheaper.toml --report reports -- tests/
 | --- | --- | --- | --- | --- |
 | `test_demo_task` | 100% (1/1) | $0.0400 | $0.0080 | -$0.0320 (-80.0%) |
 
+## Approval gates
+
+The gate stops an irreversible tool call (a refund, an email, a delete) until a rule allows it or a person approves it. It lives in the same policy file; without a `[gate]` section nothing is gated.
+
+```toml
+[gate]
+approval_timeout = "15m"       # unanswered requests are denied
+on_denied = "raise"            # or "return_to_model": the agent reads the denial
+
+[gate.effects]
+send_email = "irreversible"    # classify tools here too; the policy wins
+
+[gate.webhook]
+url = "https://approvals.example.com/fr"
+secret_env = "FR_WEBHOOK_SECRET"   # HMAC secret, read from the environment
+
+[[gate.rules]]
+id = "small-refunds"
+tool = "issue_refund"
+when = "args.amount <= 100"
+action = "allow"
+
+[[gate.rules]]
+tool = "delete_*"
+env = "prod"                   # FR_ENV, default dev
+action = "deny"
+```
+
+- **Rules run in order; the first match wins.** With no match, read and write tools run and irreversible tools need approval. A tool that doesn't declare its class is irreversible. `when` conditions compare `args`, `run` and `env` fields and are checked when the policy loads, never passed to `eval()`; `when_fn = "module:function"` covers anything more.
+- **Approve or deny** from the CLI (`fr approve <id>`, `fr deny <id>`), from Python (`fr.approvals.pending()`, `fr.approvals.resolve(id, "approve")`), on the terminal (`prompt = true`), or through the webhook: each request is POSTed, signed, to your service, which answers through `fr.approvals.asgi_app(secret)` mounted beside it.
+- **A request is decided once** and saved before anyone hears of it. Async agents keep running while one call waits.
+- **The gate fails closed.** If evaluating it fails or its store is unusable, the call is denied unless the tool only reads.
+- **Every decision is on its step**, and `fr audit` exports every irreversible call with its rule, outcome, approver and reason. In replay the recorded decisions stand and the current rules are checked, so tightening a rule shows up as a gate change.
+
 ## Configuration
 
 ```python
@@ -253,7 +288,7 @@ fr.configure(
     dir=".fr",  # or FR_DIR
     redact=[fr.redact.pattern(r"ACCT-\d+"), fr.redact.path("$.tool.args.card")],
     pricing="prices.toml",  # add or override model prices
-    policy="fr.toml",  # budgets, routes and fallbacks
+    policy="fr.toml",  # budgets, routes, fallbacks and the gate
     otel=True,  # export runs to OpenTelemetry
 )
 ```
@@ -264,6 +299,8 @@ fr.configure(
 | Variable | Purpose |
 | --- | --- |
 | `FR_DIR` | Store directory. Default `.fr`. |
+| `FR_ENV` | Deployment name gate rules match on (`env`). Default `dev`. |
+| `FR_WEBHOOK_SECRET` | The webhook's HMAC secret (the variable `secret_env` names). |
 | `OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT` | `SPAN_ONLY` exports message content on spans, after redaction. |
 
 ### Store layout
@@ -274,7 +311,7 @@ fr.configure(
   replays/<case>.jsonl          the latest replay of each case
   runs/<date>/<run_id>.jsonl    production recordings
   index.sqlite                  rebuildable with fr reindex
-  state.sqlite                  daily budget counters
+  state.sqlite                  daily budget counters, approval requests
 ```
 
 ## Command line
@@ -286,6 +323,8 @@ fr.configure(
 | `fr diff <baseline> <candidate>` | Diff two runs or cassettes; exit 1 if failed |
 | `fr accept <case>` | Make a case's latest replay its baseline |
 | `fr eval-route --policy <file> [-- pytest args]` | Replay the suite under a candidate policy; report same-verdict rate and cost delta per run |
+| `fr approve <id>`, `fr deny <id>` | Decide a pending tool call (`--approver`, `--reason`) |
+| `fr audit [--since 7d] [--format csv\|json]` | Export every irreversible call and its decision |
 | `fr reindex` | Rebuild the index from the cassettes |
 
 ## Failure handling
@@ -293,6 +332,7 @@ fr.configure(
 - **Interception is invisible.** Your agent gets exactly what the real call returned or raised, and streamed chunks arrive as they arrive.
 - **Recording fails open.** A full disk or an unreachable exporter logs one warning per run; the agent carries on. A test that records a baseline is the exception: it fails if its baseline was not written.
 - **Cost is never guessed.** An unpriced model or modifier records `cost: null`, and a USD budget does not judge a call it cannot price.
+- **The gate fails closed.** An error in it, or an unusable approval store, denies the call unless the tool only reads. An irreversible action never runs because the approval path was down.
 - **Budgets and routing fail open.** An error inside them sends the original request unchanged and logs one warning per run. Only a budget's own denial stops a call.
 - **No telemetry.** Nothing leaves your machine except your own model and tool calls and the exporter you configure.
 
@@ -318,12 +358,14 @@ SDK contract tests run the real OpenAI and Anthropic SDKs against mock HTTP tran
 | A tools-recorded case fails some runs | Live models vary. Repeat it with `repeats` and `min_pass`, or replay fully recorded. |
 | `cost` is null | The model is not in the pricing table. Add it with `fr.configure(pricing="prices.toml")`. |
 | `BudgetExceeded: per-run USD budget ...` | A call would break a hard budget, so it was not sent and the run is recorded as `denied`. Raise the limit, or set `on_breach` to `warn` or `downgrade`. |
+| `ToolDenied: ... was not approved in time` | Nobody decided before `approval_timeout`. Check that a channel is set up (webhook, prompt, or `fr approve`), or allow the call with a rule. |
+| `PolicyError ... is not allowed` in a `when` | Conditions accept comparisons, `and`/`or`/`not`, literals and `args`/`run`/`env` fields only. Use `when_fn` for more. |
 | `PolicyError ... say which provider` | A policy names a model the pricing table doesn't know. Write it as `openai/<model>` or `anthropic/<model>`. |
 | `PolicyError ... live on divergence` | Live replay of a write or irreversible tool is refused. Use `stub`, or `allow_write=True` for a write tool you trust. |
 
 ## Project status
 
-Version 0.3 adds budgets, model routing, fallbacks and `fr eval-route`. Version 0.2 added replay: record and replay modes in pytest, divergence policies, diffs and verdicts, repeats, reports and baseline updates. Version 0.1 shipped recording for OpenAI, Anthropic, LangChain and plain Python tools, OpenTelemetry export and pricing. Next: approval gates for irreversible tool calls (v0.4).
+On main, not yet released: approval gates for irreversible tool calls, with CLI, Python, terminal and webhook approvals and `fr audit` (v0.4). Version 0.3 added budgets, model routing, fallbacks and `fr eval-route`. Version 0.2 added replay: record and replay modes in pytest, divergence policies, diffs and verdicts, repeats, reports and baseline updates. Version 0.1 shipped recording for OpenAI, Anthropic, LangChain and plain Python tools, OpenTelemetry export and pricing.
 
 ## About the name
 

@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased (0.4.0)
+
+Approval gates: no irreversible tool call runs without an allow rule or a person's approval.
+
+- A `[gate]` section in the policy file gates tool calls with ordered rules on tool name (globs), class, `env` (`FR_ENV`, default `dev`), `when` conditions and `when_fn` functions; actions allow, approve or deny. Conditions are checked when the policy loads and never go through `eval()`. Without a `[gate]` section nothing changes.
+- With no matching rule, read and write calls run and irreversible calls need approval. A tool that doesn't declare its class is irreversible, and `[gate.effects]` can classify tools from the policy.
+- Approval requests are saved to `state.sqlite` before anyone is notified, with the run, the tool, the redacted arguments and the run's last steps, and are decided once. Approve or deny with `fr approve` / `fr deny`, `fr.approvals.resolve()`, a terminal prompt, or a signed webhook answered through `fr.approvals.asgi_app()`. Unanswered requests expire after `approval_timeout` (default 15m) and count as denials.
+- Async agents keep running while a call waits; sync agents wait in the calling thread.
+- A denied call raises `ToolDenied`, or returns the denial to the model as the tool's result with `on_denied = "return_to_model"`. The step and the run are recorded as `denied`.
+- Every decision is recorded on its step and span. `fr audit` exports every irreversible or gated call with its rule, outcome, approver and reason, as CSV or JSON.
+- In replay the recorded decisions stand and the current rules are checked; a difference is reported as a gate change with the verdict `changed`.
+- The gate fails closed: an error in it, or an unusable approval store, denies every call except reads.
+
 ## 0.3.0 (2026-11-05)
 
 Budgets and routing: cost becomes something you set, and a routing change is proven by replay before it ships.
