@@ -90,8 +90,8 @@ def diff(
 
     failed: a strict divergence, a run that raised where the baseline didn't,
     an aligned step whose status changed, or outputs the comparator rejects.
-    changed: steps added, removed or changed (tool arguments, model used),
-    with everything above passing. same: nothing differs.
+    changed: steps added, removed or changed (tool arguments, model used, the
+    gate's action), with everything above passing. same: nothing differs.
 
     ``models_may_differ`` ignores a change of the model used, for judging a
     routing policy that is meant to change it.
@@ -99,6 +99,7 @@ def diff(
     (base_run, base_steps), (cand_run, cand_steps) = baseline, candidate
     reasons = [f"diverged: {d}" for d in divergences]
     changes: list[Change] = []
+    gate_changes: list[str] = []  # a rule change: changed, not failed (FR-G9)
     sigs = [_signature(s) for s in base_steps], [_signature(s) for s in cand_steps]
     matcher = difflib.SequenceMatcher(None, sigs[0], sigs[1], autojunk=False)
     for op, i1, i2, j1, j2 in matcher.get_opcodes():
@@ -107,9 +108,13 @@ def diff(
                 fields = _changed_fields(b, c, models_may_differ)
                 if fields:
                     changes.append(Change("changed", _label(b), b.seq, c.seq, fields))
-                if "status" in fields:
+                if "status" in fields and "gate" not in fields:
                     reasons.append(
                         f"step {_label(c)} #{c.seq}: {b.status} -> {c.status}"
+                    )
+                if "gate" in fields:
+                    gate_changes.append(
+                        f"gate {_label(c)} #{c.seq}: {_action(b)} -> {_action(c)}"
                     )
             continue
         changes += [
@@ -124,6 +129,7 @@ def diff(
     child_diffs = [_child(b, c, compare, models_may_differ) for b, c in children]
     reasons += [f"child {c.name}: failed" for c in child_diffs if c.verdict == "failed"]
     verdict: Verdict = "failed" if reasons else "same"
+    reasons += gate_changes
     if verdict == "same" and (changes or any(c.verdict != "same" for c in child_diffs)):
         verdict = "changed"
     base_cost, cand_cost = base_run.totals.cost_usd, cand_run.totals.cost_usd
@@ -190,6 +196,8 @@ def _changed_fields(b: Step, c: Step, models_may_differ: bool) -> list[str]:
             fields.append("args")
         if (b.tool.error and b.tool.error.type) != (c.tool.error and c.tool.error.type):
             fields.append("error")
+    if _action(b) != _action(c):
+        fields.append("gate")
     if (
         not models_may_differ
         and b.model is not None
@@ -198,6 +206,10 @@ def _changed_fields(b: Step, c: Step, models_may_differ: bool) -> list[str]:
     ):
         fields.append("model_used")
     return fields
+
+
+def _action(step: Step) -> str:
+    return step.gate.action if step.gate is not None else "ungated"
 
 
 def _parsed(value: Any) -> Any:

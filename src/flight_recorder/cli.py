@@ -1,6 +1,7 @@
 """The ``fr`` command: inspect the local store (SDD CLI)."""
 
 import argparse
+import csv
 import json
 import os
 import re
@@ -14,6 +15,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, get_args
 
+from flight_recorder import approvals
 from flight_recorder.errors import CassetteError
 from flight_recorder.model import Run, Step
 from flight_recorder.replay import cases
@@ -61,6 +63,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--report", type=Path, help="also write eval-route.md and .json here"
     )
     route.add_argument("pytest_args", nargs=argparse.REMAINDER)
+    for verb in ("approve", "deny"):
+        decide = commands.add_parser(verb, help=f"{verb} a pending tool call")
+        decide.add_argument("id", help="the approval id")
+        decide.add_argument("--approver", help="who decides (default: your login)")
+        decide.add_argument("--reason")
+    audit = commands.add_parser(
+        "audit", help="export every gated or irreversible tool call and its decision"
+    )
+    audit.add_argument(
+        "--since", type=_since, help="a duration (30m, 12h, 7d) or an ISO date"
+    )
+    audit.add_argument("--format", choices=("csv", "json"), default="csv")
     args = parser.parse_args(argv)
 
     root = Path(os.environ.get("FR_DIR") or ".fr")
@@ -75,6 +89,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _accept(root, args.case)
         if args.command == "eval-route":
             return _eval_route(args.policy, args.report, args.pytest_args)
+        if args.command in ("approve", "deny"):
+            return _decide(root, args.command, args.id, args.approver, args.reason)
+        if args.command == "audit":
+            return _audit(root, args.since, args.format)
         return _show(root, args.run)
     except _Fail as exc:
         print(f"fr: {exc}", file=sys.stderr)
@@ -290,6 +308,96 @@ def _route_markdown(policy: str, rows: list[dict[str, Any]]) -> str:
             f" | {_cost(r['baseline_usd'])} | {_cost(r['candidate_usd'])} | {change} |"
         )
     return "\n".join(lines) + "\n"
+
+
+def _decide(
+    root: Path, verb: str, request_id: str, approver: str | None, reason: str | None
+) -> int:
+    store = root / "state.sqlite"
+    request = approvals.get(request_id, at=store) if store.is_file() else None
+    if request is None:
+        raise _Fail(f"no approval {request_id} in {store}")
+    decision = "approve" if verb == "approve" else "deny"
+    if not approvals.resolve(request_id, decision, approver, reason, at=store):
+        current = approvals.get(request_id, at=store)
+        state = current.state if current is not None else "missing"
+        raise _Fail(f"approval {request_id} is already {state}")
+    print(
+        f"{'approved' if decision == 'approve' else 'denied'} {request.tool} ({request_id})"
+    )
+    return 0
+
+
+AUDIT_FIELDS = (
+    "run_id",
+    "run_name",
+    "seq",
+    "started_at",
+    "tool",
+    "effect",
+    "status",
+    "action",
+    "outcome",
+    "rule",
+    "approver",
+    "decided_at",
+    "reason",
+    "approval_id",
+)
+
+
+def _audit(root: Path, since: str | None, fmt: str) -> int:
+    """Every recorded tool call that was gated or is irreversible (FR-G7).
+
+    Read from the cassettes of production runs, the source of truth; a corrupt
+    one is reported on stderr and makes the exit code 1.
+    """
+    rows: list[dict[str, Any]] = []
+    skipped = 0
+    for file in sorted((root / "runs").rglob("*.jsonl")):
+        try:
+            run, steps = load(file)
+        except (OSError, CassetteError) as exc:
+            print(f"fr: skipped {file}: {exc}", file=sys.stderr)
+            skipped += 1
+            continue
+        for step in steps:
+            tool, gate = step.tool, step.gate
+            if tool is None or (gate is None and tool.effect != "irreversible"):
+                continue
+            started = step.started_at.isoformat() if step.started_at else ""
+            if since is not None and started and started < since:
+                continue
+            rows.append(
+                {
+                    "run_id": run.run_id,
+                    "run_name": run.name,
+                    "seq": step.seq,
+                    "started_at": started,
+                    "tool": tool.name,
+                    "effect": tool.effect,
+                    "status": step.status,
+                    "action": gate.action if gate else "",
+                    "outcome": gate.outcome if gate else "ungated",
+                    "rule": (gate.rule or "default") if gate else "",
+                    "approver": (gate.approver or "") if gate else "",
+                    "decided_at": gate.decided_at.isoformat()
+                    if gate and gate.decided_at
+                    else "",
+                    "reason": (gate.reason or "") if gate else "",
+                    "approval_id": (gate.approval_id or "") if gate else "",
+                }
+            )
+    rows.sort(key=lambda r: (r["started_at"], r["run_id"], r["seq"]))
+    if fmt == "json":
+        print(json.dumps(rows, indent=2))
+    else:
+        writer = csv.DictWriter(
+            sys.stdout, fieldnames=list[str](AUDIT_FIELDS), lineterminator="\n"
+        )
+        writer.writeheader()
+        writer.writerows(rows)
+    return 1 if skipped else 0
 
 
 def _resolve(root: Path, ref: str) -> Path:

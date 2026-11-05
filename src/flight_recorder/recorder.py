@@ -9,6 +9,7 @@ import contextlib
 import logging
 import threading
 import time
+from collections import deque
 from collections.abc import Callable
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
@@ -19,7 +20,14 @@ from pydantic import BaseModel, JsonValue
 from pydantic_core import to_jsonable_python
 
 from flight_recorder import redact
-from flight_recorder.model import ErrorInfo, ModelCall, Run, Step, ToolCall
+from flight_recorder.model import (
+    ErrorInfo,
+    GateDecision,
+    ModelCall,
+    Run,
+    Step,
+    ToolCall,
+)
 
 logger = logging.getLogger("flight_recorder")
 
@@ -96,6 +104,11 @@ class PendingStep:
     token: Token[tuple[str, int] | None] | None
     tags: list[str] = field(default_factory=list[str])
     source: Literal["live", "replayed", "stubbed"] = "live"
+    gate: GateDecision | None = None
+
+
+# How many of a run's last steps an approval request shows (FR-G3).
+RECENT_STEPS = 5
 
 
 @dataclass
@@ -107,8 +120,12 @@ class ActiveRun:
     _next_seq: int = 0
     _error_logged: bool = False
     _warned: set[str] = field(default_factory=set[str])
-    # A budget denied a call; the run is recorded as denied (FR-B2).
+    # A budget or the gate denied a call; the run is recorded as denied.
     denied: bool = False
+    # References only: an approval request briefs them, so steps cost nothing.
+    _recent: deque[Step] = field(
+        default_factory=lambda: deque[Step](maxlen=RECENT_STEPS)
+    )
     _on_finish: list[Callable[[], None]] = field(
         default_factory=list[Callable[[], None]]
     )
@@ -185,6 +202,7 @@ class ActiveRun:
                 status=status,
                 model=model,
                 tool=tool,
+                gate=pending.gate,
             )
             self._add_to_totals(step)
         except Exception as exc:  # noqa: BLE001  recording fails open (FR-R9)
@@ -193,6 +211,14 @@ class ActiveRun:
         if (redacted := self._redacted(step)) is not None:
             run_id = self.run.run_id
             self._emit(lambda sink: sink.step_closed(run_id, redacted))
+            with self._lock:
+                self._recent.append(redacted)
+
+    def recent_steps(self) -> list[JsonValue]:
+        """The run's last few steps, redacted and brief, for approvals."""
+        with self._lock:
+            recent = list(self._recent)
+        return [_brief(step) for step in recent]
 
     def _add_to_totals(self, step: Step) -> None:
         with self._lock:
@@ -247,3 +273,9 @@ class ActiveRun:
             self.run.run_id,
             exc_info=exc,
         )
+
+
+def _brief(step: Step) -> JsonValue:
+    """A step without its bulk (messages, raw responses), for a person to read."""
+    exclude = {"model": {"messages", "response", "params"}}
+    return step.model_dump(mode="json", exclude=exclude, exclude_none=True)

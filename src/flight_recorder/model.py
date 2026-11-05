@@ -64,6 +64,21 @@ class ToolCall(BaseModel):
     call_id: str | None = None
 
 
+class GateDecision(BaseModel):
+    """What the action gate decided for one tool call (FR-G7)."""
+
+    # What the rules said: allow, approve (ask a person) or deny.
+    action: Literal["allow", "approve", "deny"]
+    # What happened: allowed, or approved, rejected or expired after asking,
+    # or denied by a rule or by an error in the gate (which fails closed).
+    outcome: Literal["allowed", "approved", "rejected", "expired", "denied"]
+    rule: str | None = None  # the matching rule; None for the default
+    reason: str | None = None
+    approver: str | None = None
+    decided_at: datetime | None = None
+    approval_id: str | None = None
+
+
 class Step(BaseModel):
     seq: int
     kind: Literal["model", "tool"]
@@ -78,6 +93,7 @@ class Step(BaseModel):
     status: Literal["ok", "error", "denied"]
     model: ModelCall | None = None
     tool: ToolCall | None = None
+    gate: GateDecision | None = None  # set when the policy has a gate
 
     @model_validator(mode="after")
     def _payload_matches_kind(self) -> Self:

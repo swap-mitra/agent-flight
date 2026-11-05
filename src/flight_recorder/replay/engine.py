@@ -20,9 +20,16 @@ from typing import Any, Literal, get_args
 
 from pydantic import JsonValue
 
-from flight_recorder import redact
+from flight_recorder import errors, redact
 from flight_recorder.errors import PolicyError, ReplayDivergence
-from flight_recorder.model import Effect, ErrorInfo, ModelCall, Run, Step
+from flight_recorder.model import (
+    Effect,
+    ErrorInfo,
+    GateDecision,
+    ModelCall,
+    Run,
+    Step,
+)
 from flight_recorder.recorder import ActiveRun
 
 Mode = Literal["tools", "full"]
@@ -117,6 +124,7 @@ class Served:
     result: Any = None
     error: BaseException | None = None
     response: Any = None  # a recorded model response or a stream's chunks
+    gate: GateDecision | None = None  # the recorded step's gate decision
 
 
 Recording = tuple[Run, list[Step]]
@@ -266,8 +274,11 @@ def serve_tool(
     step = cursor.take(matches, session.lookahead)
     if step is not None and step.tool is not None:
         if step.tool.error is not None:
-            return Served("replayed", error=rebuild_error(step.tool.error))
-        return Served("replayed", result=step.tool.result)
+            error = rebuild_error(step.tool.error)
+            return Served(
+                "replayed", result=step.tool.result, error=error, gate=step.gate
+            )
+        return Served("replayed", result=step.tool.result, gate=step.gate)
     policy = rule.on_divergence or session.policy
     if policy == "live" and rule.on_divergence is None and effect != "read":
         policy = "strict"  # a run-wide live policy only ever re-runs reads
@@ -308,9 +319,11 @@ class ReplayedError(Exception):
 
 
 def rebuild_error(error: ErrorInfo) -> BaseException:
-    """The recorded exception: builtins and LangChain's ToolException by type,
-    anything else as ReplayedError."""
+    """The recorded exception: builtins, Flight Recorder's own errors and
+    LangChain's ToolException by type, anything else as ReplayedError."""
     cls = getattr(builtins, error.type, None)
+    if error.type.startswith("flight_recorder.errors."):
+        cls = getattr(errors, error.type.rpartition(".")[2], None)
     if error.type == "langchain_core.tools.base.ToolException":
         try:
             from langchain_core.tools import ToolException

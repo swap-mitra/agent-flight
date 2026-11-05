@@ -200,6 +200,13 @@ def _step_attributes(step: Step, content: bool) -> Attributes:
     attributes: Attributes = {"fr.step.seq": step.seq, "fr.step.source": step.source}
     if step.tags:
         attributes["fr.step.tags"] = step.tags
+    if step.gate is not None:
+        attributes["fr.gate.action"] = step.gate.action
+        attributes["fr.gate.outcome"] = step.gate.outcome
+        if step.gate.rule is not None:
+            attributes["fr.gate.rule"] = step.gate.rule
+        if step.gate.approver is not None:
+            attributes["fr.gate.approver"] = step.gate.approver
     if step.model is not None:
         attributes |= _model_attributes(step.model, content)
     if step.tool is not None:
