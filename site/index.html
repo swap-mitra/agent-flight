@@ -122,7 +122,7 @@ client = fr.wrap(OpenAI())            <span class="c"># or Anthropic, or a LangC
     <div class="grid">
       <div class="feature"><h3>Invisible interception</h3><p>Your agent gets exactly what the real call returned or raised. Under 2 ms per call, checked in CI.</p></div>
       <div class="feature"><h3>Two replay modes</h3><p>Serve tool results and keep models live to test prompts, or serve model responses too for free, offline, deterministic runs.</p></div>
-      <div class="feature"><h3>Safe by default</h3><p>Secrets redacted before anything is written. Replay refuses to call an irreversible tool for real.</p></div>
+      <div class="feature"><h3>Safe by default</h3><p>Irreversible tool calls wait for an allow rule or a person's approval, and every decision is audited. Secrets are redacted before anything is written.</p></div>
       <div class="feature"><h3>Cost under control</h3><p>Every call priced, never guessed. Budgets stop a call before it is sent, and routes move cheap steps to a smaller model, proven by replay first.</p></div>
       <div class="feature"><h3>Works with your stack</h3><p>OpenAI, Anthropic, LangChain and LangGraph, or any Python function as a tool.</p></div>
       <div class="feature"><h3>Your data stays yours</h3><p>Plain files in your repo. Optional OpenTelemetry export to the backend you already run. No telemetry.</p></div>
