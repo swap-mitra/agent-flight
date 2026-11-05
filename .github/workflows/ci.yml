@@ -86,6 +86,22 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
         env:
           HEPTAPOD_DIR: ${{ github.workspace }}/heptapod
+      # Plan row 4.12 (v0.4 exit criterion): one approved and one denied
+      # irreversible call through the webhook, both in the audit export.
+      - name: Approve and deny through the webhook
+        run: |
+          uv run pytest tests/test_gate_demo.py -p no:cacheprovider
+          {
+            echo "## Flight Recorder audit"
+            echo
+            echo '```csv'
+            uv run fr audit
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+        env:
+          HEPTAPOD_DIR: ${{ github.workspace }}/heptapod
+          FR_DEMO_DIR: ${{ github.workspace }}/dogfood/demo-store
+          FR_DIR: ${{ github.workspace }}/dogfood/demo-store
       - name: Post the replay report on the pull request
         if: always() && github.event_name == 'pull_request' && hashFiles('dogfood/reports/report.md') != ''
         # A fork's token can't comment; the report is still in the job log.
