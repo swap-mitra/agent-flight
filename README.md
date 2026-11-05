@@ -14,7 +14,7 @@ Replay a recorded run against a changed agent and get one verdict: same, changed
 
 [Quick start](#quick-start) · [Replay tests](#replay-tests-in-ci) · [How it works](#how-it-works) · [Contributing](CONTRIBUTING.md)
 
-<img src="assets/demo.gif" alt="A recorded agent run replayed in CI: a changed prompt is caught as a failed replay" width="720">
+<img src="assets/demo.gif" alt="An agent run passing through Flight Recorder: calls recorded to a cassette, one routed to a cheaper model, an irreversible refund held for approval, then the run replayed in CI with the verdict same" width="720">
 
 </div>
 
