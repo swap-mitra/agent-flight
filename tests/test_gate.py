@@ -391,8 +391,10 @@ def test_an_unanswered_request_expires_as_a_denial(tmp_path: Path) -> None:
 
 def _all(tmp_path: Path) -> list[Any]:
     import sqlite3
+    from contextlib import closing
 
-    with sqlite3.connect(tmp_path / ".fr" / "state.sqlite") as db:
+    # closing(): a connection's own "with" commits but doesn't close.
+    with closing(sqlite3.connect(tmp_path / ".fr" / "state.sqlite")) as db:
         db.row_factory = sqlite3.Row
         return list(db.execute("SELECT * FROM approvals"))
 
