@@ -6,9 +6,9 @@ from pathlib import Path
 
 from flight_recorder import recorder
 from flight_recorder import redact as _redact
-from flight_recorder.policy import budgets as _budgets
 from flight_recorder.policy import loader as _policy
 from flight_recorder.policy import pricing as _pricing
+from flight_recorder.store import state as _state
 from flight_recorder.store.cassette import CassetteStore
 
 
@@ -59,7 +59,7 @@ def configure(
     _redact.rules = [*_redact.DEFAULT_RULES, *redact]
     _pricing.table = table
     _policy.configured = loaded
-    _budgets.state = root / "state.sqlite"
+    _state.path = root / "state.sqlite"
 
 
 # Recording works without a configure() call (SDD Write path).

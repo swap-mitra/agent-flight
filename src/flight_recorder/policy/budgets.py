@@ -11,31 +11,18 @@ never guessed.
 
 import logging
 import math
-import sqlite3
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
 
 from flight_recorder.errors import BudgetExceeded
 from flight_recorder.model import ModelCall, Usage
 from flight_recorder.policy import pricing
 from flight_recorder.policy.loader import Budgets, Limits, provider_of, zone
 from flight_recorder.recorder import ActiveRun
+from flight_recorder.store import state
 
 logger = logging.getLogger("flight_recorder")
-
-# Set by fr.configure(), beside the cassette store.
-state: Path = Path(".fr") / "state.sqlite"
-
-_SCHEMA = """CREATE TABLE IF NOT EXISTS budget_day (
-    day TEXT NOT NULL,
-    scope TEXT NOT NULL,
-    usd REAL NOT NULL DEFAULT 0,
-    tokens INTEGER NOT NULL DEFAULT 0,
-    unpriced INTEGER NOT NULL DEFAULT 0,
-    PRIMARY KEY (day, scope)
-)"""
 
 
 @dataclass(frozen=True)
@@ -104,7 +91,7 @@ def spend(budgets: Budgets, run_name: str, call: ModelCall) -> None:
     tokens = usage.input_tokens + usage.output_tokens if usage is not None else 0
     unknown = 1 if call.cost_usd is None else 0
     day = _today(budgets)
-    with closing(_connect()) as db, db:
+    with closing(state.connect()) as db, db:
         for scope in scopes:
             db.execute(
                 "INSERT INTO budget_day (day, scope, usd, tokens, unpriced)"
@@ -201,7 +188,7 @@ def _daily_scopes(budgets: Budgets, run_name: str) -> dict[str, Limits]:
 
 
 def _spent_today(budgets: Budgets, scope: str) -> tuple[float | None, int]:
-    with closing(_connect()) as db:
+    with closing(state.connect()) as db:
         row = db.execute(
             "SELECT usd, tokens, unpriced FROM budget_day WHERE day = ? AND scope = ?",
             (_today(budgets), scope),
@@ -210,13 +197,6 @@ def _spent_today(budgets: Budgets, scope: str) -> tuple[float | None, int]:
         return 0.0, 0
     usd, tokens, unpriced = row
     return (None if unpriced else usd), tokens
-
-
-def _connect() -> sqlite3.Connection:
-    state.parent.mkdir(parents=True, exist_ok=True)
-    db = sqlite3.connect(state, timeout=5)
-    db.execute(_SCHEMA)
-    return db
 
 
 def _today(budgets: Budgets) -> str:
