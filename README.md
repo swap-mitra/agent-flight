@@ -323,7 +323,7 @@ SDK contract tests run the real OpenAI and Anthropic SDKs against mock HTTP tran
 
 ## Project status
 
-On main, not yet released: budgets, model routing, fallbacks and `fr eval-route` (v0.3). Version 0.2 added replay: record and replay modes in pytest, divergence policies, diffs and verdicts, repeats, reports and baseline updates. Version 0.1 shipped recording for OpenAI, Anthropic, LangChain and plain Python tools, OpenTelemetry export and pricing. Next: approval gates for irreversible tool calls (v0.4).
+Version 0.3 adds budgets, model routing, fallbacks and `fr eval-route`. Version 0.2 added replay: record and replay modes in pytest, divergence policies, diffs and verdicts, repeats, reports and baseline updates. Version 0.1 shipped recording for OpenAI, Anthropic, LangChain and plain Python tools, OpenTelemetry export and pricing. Next: approval gates for irreversible tool calls (v0.4).
 
 ## About the name
 

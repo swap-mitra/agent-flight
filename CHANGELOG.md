@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased (0.3.0)
+## 0.3.0 (2026-11-05)
 
 Budgets and routing: cost becomes something you set, and a routing change is proven by replay before it ships.
 
