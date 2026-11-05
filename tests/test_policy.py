@@ -150,11 +150,11 @@ def test_an_invalid_policy_raises_at_configure_and_changes_nothing(
 ) -> None:
     good = tmp_path / "good.toml"
     good.write_text(f'[[routes]]\nmodel = "{SMALL}"\n', encoding="utf-8")
-    fr.configure(policy=good)
+    fr.configure(dir=tmp_path / ".fr", policy=good)
     bad = tmp_path / "bad.toml"
     bad.write_text(text, encoding="utf-8")
     with pytest.raises(PolicyError, match=error):
-        fr.configure(policy=bad)
+        fr.configure(dir=tmp_path / ".fr", policy=bad)
     with fr.run("triage") as run:
         pass
     assert run.policy_hash is not None  # the good policy is still in force
@@ -162,7 +162,7 @@ def test_an_invalid_policy_raises_at_configure_and_changes_nothing(
 
 def test_a_missing_policy_file_raises_policy_error(tmp_path: Path) -> None:
     with pytest.raises(PolicyError, match="cannot read"):
-        fr.configure(policy=tmp_path / "nope.toml")
+        fr.configure(dir=tmp_path / ".fr", policy=tmp_path / "nope.toml")
 
 
 def test_runs_carry_the_policy_hash(tmp_path: Path) -> None:
